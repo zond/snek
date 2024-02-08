@@ -5,30 +5,12 @@ import (
 	"testing"
 )
 
-type testLogger struct {
-	t *testing.T
-}
-
-func (t testLogger) Errorf(format string, params ...interface{}) {
-	t.t.Errorf(format, params...)
-}
-
-func (t testLogger) Warningf(format string, params ...interface{}) {
-}
-
-func (t testLogger) Infof(format string, params ...interface{}) {
-}
-
-func (t testLogger) Debugf(format string, params ...interface{}) {
-}
-
 func withSnek(t *testing.T, f func(s *Snek)) {
 	dir, err := os.MkdirTemp(os.TempDir(), "snek_test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	opts := DefaultOptions(dir)
-	opts.Logger = testLogger{}
 	s, err := opts.Open()
 	defer func() {
 		s.Close()
@@ -91,3 +73,34 @@ func TestInsertGetUpdate(t *testing.T) {
 		}
 	})
 }
+
+//func TestFieldEQIterator(t *testing.T) {
+//	withSnek(t, func(s *Snek) {
+//		if err := s.Update(func(u *Update) error {
+//			if err := u.Insert(&testStruct{ID: []byte("id1"), String: "string1"}); err != nil {
+//				return err
+//			}
+//			if err := u.Insert(&testStruct{ID: []byte("id2"), String: "string1"}); err != nil {
+//				return err
+//			}
+//			if err := u.Insert(&testStruct{ID: []byte("id3"), String: "string2"}); err != nil {
+//				return err
+//			}
+//			return nil
+//		}); err != nil {
+//			t.Fatal(err)
+//		}
+//		if err := s.View(func(v *View) error {
+//			iter, err := v.fieldEqIterator(&testStruct{}, "String", "string1")
+//			if err != nil {
+//				return err
+//			}
+//			for key, more := iter.Next(); more; key, more = iter.Next() {
+//				fmt.Println(key)
+//			}
+//			return nil
+//		}); err != nil {
+//			t.Fatal(err)
+//		}
+//	})
+//}

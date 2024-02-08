@@ -7,15 +7,17 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/dgraph-io/badger"
+	"github.com/nutsdb/nutsdb"
 )
 
 type Snek struct {
-	badger  *badger.DB
+	db      *nutsdb.DB
 	options Options
 }
 
-func (s *Snek) encode(a any) ([]byte, error) {
+type encoderFunc func(any) ([]byte, error)
+
+func (s *Snek) binaryEncode(a any) ([]byte, error) {
 	buf := &bytes.Buffer{}
 	if err := binary.Write(buf, s.options.Endianness, a); err != nil {
 		return nil, err
@@ -23,134 +25,119 @@ func (s *Snek) encode(a any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (s *Snek) decode(b []byte, a any) error {
-	val := reflect.ValueOf(a)
-	if err := binary.Read(bytes.NewBuffer(b), s.options.Endianness, val.Interface()); err != nil {
-		return err
+func (s *Snek) stringEncode(a any) ([]byte, error) {
+	return []byte(a.(string)), nil
+}
+
+func (s *Snek) primitiveTypeInfo(a any) (bool, encoderFunc) {
+	switch reflect.TypeOf(a).Kind() {
+	case reflect.Bool:
+		fallthrough
+	case reflect.Int8:
+		fallthrough
+	case reflect.Int16:
+		fallthrough
+	case reflect.Int32:
+		fallthrough
+	case reflect.Int64:
+		fallthrough
+	case reflect.Uint8:
+		fallthrough
+	case reflect.Uint16:
+		fallthrough
+	case reflect.Uint32:
+		fallthrough
+	case reflect.Uint64:
+		fallthrough
+	case reflect.Float32:
+		fallthrough
+	case reflect.Float64:
+		fallthrough
+	case reflect.Complex64:
+		fallthrough
+	case reflect.Complex128:
+		return true, s.binaryEncode
+	case reflect.String:
+		return true, s.stringEncode
 	}
-	return nil
+	return false, nil
 }
 
 type Options struct {
-	badger.Options
+	nutsdb.Options
 	Endianness binary.ByteOrder
 }
 
 func DefaultOptions(path string) Options {
+	opts := nutsdb.DefaultOptions
+	opts.Dir = path
 	return Options{
-		Options:    badger.DefaultOptions(path),
+		Options:    opts,
 		Endianness: binary.NativeEndian,
 	}
 }
 
 func (o Options) Open() (*Snek, error) {
-	b, err := badger.Open(o.Options)
+	db, err := nutsdb.Open(o.Options)
 	if err != nil {
 		return nil, err
 	}
+	if err := db.Update(func(tx *nutsdb.Tx) error {
+		if err := tx.NewKVBucket(itemBucket); err != nil && err != nutsdb.ErrBucketAlreadyExist {
+			return err
+		}
+		if err := tx.NewSetBucket(indexBucket); err != nil && err != nutsdb.ErrBucketAlreadyExist {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	return &Snek{
-		badger:  b,
+		db:      db,
 		options: o,
 	}, nil
 }
 
 func (s *Snek) Close() error {
-	return s.badger.Close()
+	return s.db.Close()
 }
 
 type View struct {
-	*badger.Txn
+	tx   *nutsdb.Tx
 	snek *Snek
 }
 
-type ID [64]byte
-
 var (
-	itemPrefix     = []byte("items/")
-	indexPrefix    = []byte("index/")
-	indexSeparator = []byte{0}
-	byteArrayType  = reflect.TypeOf([]byte{})
+	itemBucket    = "items"
+	indexBucket   = "index"
+	byteArrayType = reflect.TypeOf([]byte{})
 )
 
-func join(bs ...[]byte) []byte {
-	result := []byte{}
-	for _, b := range bs {
-		result = append(result, b...)
-	}
-	return result
-}
-
-type fieldInfo struct {
-	getValue func() ([]byte, error)
-	setValue func([]byte) error
-}
-
-type ifInfo struct {
+type typeInfo struct {
 	snek        *Snek
-	typePrefix  []byte
 	id          []byte
 	structType  reflect.Type
 	structValue reflect.Value
 }
 
-func (i *ifInfo) fields() map[string]fieldInfo {
-	fields := map[string]fieldInfo{}
-	var appendFieldsFunc func(string, reflect.Type)
-	appendFieldsFunc = func(prefix string, typ reflect.Type) {
-		for _, iterField := range reflect.VisibleFields(typ) {
-			field := iterField
-			switch field.Type.Kind() {
-			case reflect.Bool:
-				fallthrough
-			case reflect.Int8:
-				fallthrough
-			case reflect.Int16:
-				fallthrough
-			case reflect.Int32:
-				fallthrough
-			case reflect.Int64:
-				fallthrough
-			case reflect.Uint8:
-				fallthrough
-			case reflect.Uint16:
-				fallthrough
-			case reflect.Uint32:
-				fallthrough
-			case reflect.Uint64:
-				fallthrough
-			case reflect.Float32:
-				fallthrough
-			case reflect.Float64:
-				fallthrough
-			case reflect.Complex64:
-				fallthrough
-			case reflect.Complex128:
-				fields[prefix+field.Name] = fieldInfo{
-					getValue: func() ([]byte, error) {
-						v := i.structValue.FieldByIndex(field.Index).Interface()
-						return i.snek.encode(v)
-					},
-					setValue: func(b []byte) error {
-						v := reflect.New(field.Type)
-						if err := i.snek.decode(b, v.Interface()); err != nil {
-							return err
-						}
-						i.structValue.FieldByIndex(field.Index).Set(v.Elem())
-						return nil
-					},
-				}
-			case reflect.Struct:
-				appendFieldsFunc(field.Name+".", field.Type)
-			default:
-
-			}
-		}
+func join(parts ...[]byte) []byte {
+	result := []byte{}
+	for _, part := range parts {
+		result = append(result, part...)
 	}
-	appendFieldsFunc("", i.structType)
-	return fields
+	return result
 }
 
-func (s *Snek) getIFInfo(a any) *ifInfo {
+func (i *typeInfo) itemKey() []byte {
+	return join([]byte(fmt.Sprintf("%s.%s", i.structType.PkgPath(), i.structType.Name())), i.id)
+}
+
+func (i *typeInfo) indexPrefix(fieldName string) []byte {
+	return join([]byte(fmt.Sprintf("%s.%s", i.structType.PkgPath(), i.structType.Name())), []byte(fieldName), []byte{0})
+}
+
+func (s *Snek) getTypeInfo(a any) *typeInfo {
 	ptrVal := reflect.ValueOf(a)
 	if ptrVal.Kind() != reflect.Ptr {
 		panic(fmt.Errorf("only pointers to structs allowed, not %v", a))
@@ -161,16 +148,41 @@ func (s *Snek) getIFInfo(a any) *ifInfo {
 	}
 	idField := val.FieldByName("ID")
 	if idField.Type() != byteArrayType {
-		panic(fmt.Errorf("only structs with a []ID allowed, not %v", a))
+		panic(fmt.Errorf("only structs with a ID of type []byte allowed, not %v", a))
 	}
-	typ := val.Type()
-	return &ifInfo{
+	return &typeInfo{
 		snek:        s,
-		typePrefix:  []byte(fmt.Sprintf("%s.%s/", typ.PkgPath(), typ.Name())),
 		id:          idField.Interface().([]byte),
-		structType:  typ,
+		structType:  val.Type(),
 		structValue: val,
 	}
+}
+
+func (i *typeInfo) fields() (map[string][]byte, error) {
+	fields := map[string][]byte{}
+	var appendFieldsFunc func(string, reflect.Type) error
+	appendFieldsFunc = func(prefix string, typ reflect.Type) error {
+		for _, field := range reflect.VisibleFields(typ) {
+			value := i.structValue.FieldByIndex(field.Index).Interface()
+			if isPrimitive, encoder := i.snek.primitiveTypeInfo(value); isPrimitive {
+				b, err := encoder(value)
+				if err != nil {
+					return err
+				}
+				fields[field.Name] = b
+			} else if field.Type.Kind() == reflect.Struct {
+				if err := appendFieldsFunc(field.Name+".", field.Type); err != nil {
+					return err
+				}
+			}
+
+		}
+		return nil
+	}
+	if err := appendFieldsFunc("", i.structType); err != nil {
+		return nil, err
+	}
+	return fields, nil
 }
 
 type Update struct {
@@ -178,63 +190,60 @@ type Update struct {
 }
 
 func (s *Snek) View(f func(*View) error) error {
-	txn := s.badger.NewTransaction(false)
-	defer txn.Discard()
-	return f(&View{
-		Txn:  txn,
-		snek: s,
+	return s.db.View(func(tx *nutsdb.Tx) error {
+		view := &View{
+			tx:   tx,
+			snek: s,
+		}
+		return f(view)
 	})
 }
 
 func (v *View) Get(a any) error {
-	info := v.snek.getIFInfo(a)
-	data, err := v.Txn.Get(join(itemPrefix, info.typePrefix, info.id))
+	info := v.snek.getTypeInfo(a)
+	data, err := v.tx.Get(itemBucket, info.itemKey())
 	if err != nil {
 		return err
 	}
-	return data.Value(func(b []byte) error {
-		return json.Unmarshal(b, a)
-	})
+	return json.Unmarshal(data, a)
 }
 
 func (s *Snek) Update(f func(*Update) error) error {
-	txn := s.badger.NewTransaction(true)
-	if err := f(&Update{
-		View: View{
-			Txn:  txn,
-			snek: s,
-		},
-	}); err != nil {
-		txn.Discard()
-		return err
-	}
-	return txn.Commit()
+	return s.db.Update(func(tx *nutsdb.Tx) error {
+		update := &Update{
+			View: View{
+				tx:   tx,
+				snek: s,
+			},
+		}
+		return f(update)
+	})
 }
 
 var (
 	ErrKeyAlreadyExists = fmt.Errorf("key already exists")
 )
 
-func (u *Update) addToIndex(info *ifInfo) error {
-	for name, fieldInfo := range info.fields() {
-		b, err := fieldInfo.getValue()
-		if err != nil {
-			return err
-		}
-		if err := u.Txn.Set(join(indexPrefix, info.typePrefix, []byte(name), indexSeparator, b, info.id), info.id); err != nil {
+func (u *Update) addToIndex(info *typeInfo) error {
+	fields, err := info.fields()
+	if err != nil {
+		return err
+	}
+	for name, bytes := range fields {
+		if err := u.tx.SAdd(indexBucket, join(info.indexPrefix(name), bytes), info.id); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (u *Update) removeFromIndex(info *ifInfo) error {
-	for name, fieldInfo := range info.fields() {
-		b, err := fieldInfo.getValue()
-		if err != nil {
-			return err
-		}
-		if err := u.Txn.Delete(join(indexPrefix, info.typePrefix, []byte(name), indexSeparator, b, info.id)); err != nil {
+func (u *Update) removeFromIndex(info *typeInfo) error {
+	fields, err := info.fields()
+	if err != nil {
+		return err
+	}
+	for name, bytes := range fields {
+		if err := u.tx.SRem(indexBucket, join(info.indexPrefix(name), bytes), info.id); err != nil {
 			return err
 		}
 	}
@@ -242,43 +251,43 @@ func (u *Update) removeFromIndex(info *ifInfo) error {
 }
 
 func (u *Update) Update(a any) error {
-	info := u.snek.getIFInfo(a)
-	key := join(itemPrefix, info.typePrefix, info.id)
-
-	data, err := u.Txn.Get(key)
+	info := u.snek.getTypeInfo(a)
+	key := info.itemKey()
+	oldData, err := u.tx.Get(itemBucket, key)
 	if err != nil {
 		return err
 	}
-	dupe := reflect.New(info.structType).Interface()
-	if err := data.Value(func(b []byte) error {
-		return json.Unmarshal(b, dupe)
-	}); err != nil {
+	oldValue := reflect.New(info.structType).Interface()
+	if err := json.Unmarshal(oldData, oldValue); err != nil {
 		return err
 	}
-
+	if err := u.removeFromIndex(u.snek.getTypeInfo(oldValue)); err != nil {
+		return err
+	}
 	b, err := json.Marshal(a)
 	if err != nil {
 		return err
 	}
-	if err := u.Txn.Set(key, b); err != nil {
+	if err := u.tx.Put(itemBucket, key, b, 0); err != nil {
 		return err
 	}
-
 	return u.addToIndex(info)
 }
 
 func (u *Update) Insert(a any) error {
-	info := u.snek.getIFInfo(a)
-	key := join(itemPrefix, info.typePrefix, info.id)
-	if _, err := u.Txn.Get(key); err != badger.ErrKeyNotFound {
+	info := u.snek.getTypeInfo(a)
+	key := info.itemKey()
+
+	if _, err := u.tx.Get(itemBucket, key); err != nutsdb.ErrKeyNotFound {
 		return ErrKeyAlreadyExists
 	}
 	b, err := json.Marshal(a)
 	if err != nil {
 		return err
 	}
-	if err := u.Txn.Set(key, b); err != nil {
+	if err := u.tx.Put(itemBucket, key, b, 0); err != nil {
 		return err
 	}
+
 	return u.addToIndex(info)
 }
