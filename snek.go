@@ -15,6 +15,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/zond/snek/synch"
 )
 
 type ID []byte
@@ -27,11 +28,23 @@ var (
 	idType = reflect.TypeOf(ID{})
 )
 
+type subscription interface {
+	push()
+	matches(any) bool
+	getID() ID
+}
+
 type Snek struct {
-	ctx     context.Context
-	db      *sqlx.DB
-	options Options
-	rng     *rand.Rand
+	ctx           context.Context
+	db            *sqlx.DB
+	options       Options
+	rng           *rand.Rand
+	subscriptions *synch.SMap[string, *synch.SMap[string, subscription]]
+}
+
+func (s *Snek) getSubscriptions(typ reflect.Type) *synch.SMap[string, subscription] {
+	result, _ := s.subscriptions.SetIfMissing(typ.Name(), synch.NewSMap[string, subscription]())
+	return result
 }
 
 func (s *Snek) AssertTable(a any) error {
@@ -197,7 +210,55 @@ type Query struct {
 	Order []Order
 }
 
-func (v *View) Select(a any, query Query) error {
+type Subscriber[T any] func([]T, error) error
+
+type typedSubscription[T any] struct {
+	typ        reflect.Type
+	id         ID
+	query      *Query
+	snek       *Snek
+	subscriber Subscriber[T]
+}
+
+func (s *typedSubscription[T]) getID() ID {
+	return s.id
+}
+
+func (s *typedSubscription[T]) matches(a any) bool {
+	// TODO(zond): Implement.
+	return false
+}
+
+func (s *typedSubscription[T]) push() {
+	results := []T{}
+	subscriberErr := s.snek.View(func(v *View) error {
+		return v.Select(&results, s.query)
+	})
+	pushErr := s.subscriber(results, subscriberErr)
+	if pushErr != nil {
+		subs := s.snek.getSubscriptions(s.typ)
+		subs.Del(string(s.id))
+	}
+}
+
+func Subscribe[T any](s *Snek, query *Query, subscriber Subscriber[T]) {
+	sub := &typedSubscription[T]{
+		typ:        reflect.TypeOf([]T{}),
+		id:         s.NewID(),
+		snek:       s,
+		query:      query,
+		subscriber: subscriber,
+	}
+	subs := s.getSubscriptions(sub.typ)
+	if _, found := subs.Set(string(sub.id), sub); found {
+		log.Panicf("found previous subscription with new subscription ID %+v", sub.id)
+	}
+	go func() {
+		sub.push()
+	}()
+}
+
+func (v *View) Select(a any, query *Query) error {
 	typ := reflect.TypeOf(a)
 	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Slice || typ.Elem().Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("only pointers to slices of structs allowed, not %v", a)
