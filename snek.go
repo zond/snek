@@ -107,6 +107,76 @@ func (v *View) query(query string, params ...any) (*sqlx.Rows, error) {
 	return rows, err
 }
 
+type Set interface {
+	toWhereCondition() (string, []any)
+}
+
+type Comparator int
+
+const (
+	EQ Comparator = iota
+	NE
+	GT
+	GE
+	LT
+	LE
+)
+
+func (c Comparator) String() string {
+	switch c {
+	case EQ:
+		return "="
+	case NE:
+		return "!="
+	case GT:
+		return ">"
+	case GE:
+		return ">="
+	case LT:
+		return "<"
+	case LE:
+		return "<="
+	default:
+		panic(fmt.Errorf("unrecognized comparator %v", int(c)))
+	}
+}
+
+type Condition struct {
+	Field      string
+	Value      any
+	Comparator Comparator
+}
+
+func (c *Condition) toWhereCondition() (string, []any) {
+	return fmt.Sprintf("\"%s\" %s ?", c.Field, c.Comparator.String()), []any{c.Value}
+}
+
+type And []Set
+
+func (a And) toWhereCondition() (string, []any) {
+	stringParts := []string{}
+	valueParts := []any{}
+	for _, set := range a {
+		query, params := set.toWhereCondition()
+		stringParts = append(stringParts, fmt.Sprintf("(%s)", query))
+		valueParts = append(valueParts, params...)
+	}
+	return strings.Join(stringParts, " AND "), valueParts
+}
+
+type Or []Set
+
+func (o Or) toWhereCondition() (string, []any) {
+	stringParts := []string{}
+	valueParts := []any{}
+	for _, set := range o {
+		query, params := set.toWhereCondition()
+		stringParts = append(stringParts, fmt.Sprintf("(%s)", query))
+		valueParts = append(valueParts, params...)
+	}
+	return strings.Join(stringParts, " OR "), valueParts
+}
+
 func (v *View) Get(a any) error {
 	info := v.snek.getValueInfo(a)
 	query, params := info.toGetStatement()
