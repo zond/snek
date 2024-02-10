@@ -33,23 +33,36 @@ func mustContain[T any](t *testing.T, elements []T, ids []ID) {
 	for _, element := range elements {
 		stringID := reflect.ValueOf(element).FieldByName("ID").Interface().(ID).String()
 		if !idSet[stringID] {
+			t.Helper()
 			t.Errorf("wanted %+v to contain exactly %+v, but found %v", elements, ids, stringID)
 		}
 		delete(idSet, stringID)
 	}
 	if len(idSet) > 0 {
+		t.Helper()
 		t.Errorf("wanted %+v to contain exactly %+v, but didn't contain %v", elements, ids, len(idSet))
+	}
+}
+
+func mustList[T any](t *testing.T, elements []T, ids []ID) {
+	for i := range elements {
+		if reflect.ValueOf(elements[i]).FieldByName("ID").Interface().(ID).String() != ids[i].String() {
+			t.Helper()
+			t.Errorf("wanted %+v to contain exactly %+v", elements, ids)
+		}
 	}
 }
 
 func (t *testSnek) must(err error) {
 	if err != nil {
+		t.t.Helper()
 		t.t.Errorf("got %v, wanted no error", err)
 	}
 }
 
 func (t *testSnek) mustNot(err error) {
 	if err == nil {
+		t.t.Helper()
 		t.t.Errorf("got nil, wanted some error")
 	}
 }
@@ -136,10 +149,10 @@ func TestInsertGetUpdate(t *testing.T) {
 
 func TestSelect(t *testing.T) {
 	withSnek(t, func(s *testSnek) {
-		ts1 := &testStruct{ID: s.NewID(), String: "string1", Int: 1}
-		ts2 := &testStruct{ID: s.NewID(), String: "string2", Int: 2}
-		ts3 := &testStruct{ID: s.NewID(), String: "string3", Int: 3}
-		ts4 := &testStruct{ID: s.NewID(), String: "string4", Int: 4}
+		ts1 := &testStruct{ID: s.NewID(), String: "string1", Int: 1, Inner: innerTestStruct{Float: 1}}
+		ts2 := &testStruct{ID: s.NewID(), String: "string2", Int: 2, Inner: innerTestStruct{Float: 1}}
+		ts3 := &testStruct{ID: s.NewID(), String: "string3", Int: 3, Inner: innerTestStruct{Float: 2}}
+		ts4 := &testStruct{ID: s.NewID(), String: "string4", Int: 4, Inner: innerTestStruct{Float: 2}}
 		s.must(s.AssertTable(ts1))
 		s.must(s.Update(func(u *Update) error {
 			s.must(u.Insert(ts1))
@@ -149,22 +162,43 @@ func TestSelect(t *testing.T) {
 		}))
 		s.must(s.View(func(v *View) error {
 			res := []testStruct{}
-			s.must(v.Select(&res, Or{Cond{"String", EQ, "string1"}, Cond{"String", EQ, "string2"}}))
+			s.must(v.Select(&res, Query{Set: Or{
+				Cond{"String", EQ, "string1"},
+				Cond{"String", EQ, "string2"}}}))
 			mustContain(t, res, []ID{ts1.ID, ts2.ID})
-			s.must(v.Select(&res, And{Cond{"String", EQ, "string1"}, Cond{"Int", EQ, 2}}))
+			s.must(v.Select(&res, Query{Set: And{
+				Cond{"String", EQ, "string1"},
+				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{})
-			s.must(v.Select(&res, And{
+			s.must(v.Select(&res, Query{Set: And{
 				Or{
 					Cond{"String", EQ, "string1"},
 					Cond{"String", EQ, "string2"}},
-				Cond{"Int", EQ, 2}}))
+				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{ts2.ID})
-			s.must(v.Select(&res, Or{
+			s.must(v.Select(&res, Query{Set: Or{
 				And{
 					Cond{"String", EQ, "string1"},
 					Cond{"Int", EQ, 2}},
-				Cond{"Int", EQ, 2}}))
+				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{ts2.ID})
+			s.must(v.Select(&res, Query{Set: Cond{"Int", GT, 0}}))
+			mustContain(t, res, []ID{ts1.ID, ts2.ID, ts3.ID, ts4.ID})
+			s.must(v.Select(&res, Query{
+				Limit: 2,
+				Order: []Order{{"Int", true}},
+				Set:   Cond{"Int", GT, 0}}))
+			mustList(t, res, []ID{ts4.ID, ts3.ID})
+			s.must(v.Select(&res, Query{
+				Limit: 2,
+				Order: []Order{{"Int", false}},
+				Set:   Cond{"Int", GT, 0}}))
+			mustList(t, res, []ID{ts1.ID, ts2.ID})
+			s.must(v.Select(&res, Query{
+				Limit: 2,
+				Order: []Order{{"Inner.Float", true}, {"Int", false}},
+				Set:   Cond{"Int", LE, 3}}))
+			mustList(t, res, []ID{ts3.ID, ts1.ID})
 			return nil
 		}))
 	})

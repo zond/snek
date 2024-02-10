@@ -186,15 +186,43 @@ func (o Or) toWhereCondition() (string, []any) {
 	return strings.Join(stringParts, " OR "), valueParts
 }
 
-func (v *View) Select(a any, set Set) error {
+type Order struct {
+	Field string
+	Desc  bool
+}
+
+type Query struct {
+	Set   Set
+	Limit uint
+	Order []Order
+}
+
+func (v *View) Select(a any, query Query) error {
 	typ := reflect.TypeOf(a)
 	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Slice || typ.Elem().Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("only pointers to slices of structs allowed, not %v", a)
 	}
-	condition, params := set.toWhereCondition()
-	query := fmt.Sprintf("SELECT * FROM \"%s\" WHERE %s;", typ.Elem().Elem().Name(), condition)
-	err := v.tx.SelectContext(v.snek.ctx, a, query, params...)
-	v.snek.logIf(v.snek.options.LogQuery, "QUERY(\"%s\", %+v) => %v", strings.ReplaceAll(query, "\"", "\\\""), params, err)
+	condition, params := query.Set.toWhereCondition()
+	buf := &bytes.Buffer{}
+	fmt.Fprintf(buf, "SELECT * FROM \"%s\" WHERE %s", typ.Elem().Elem().Name(), condition)
+	if len(query.Order) > 0 {
+		orderParts := []string{}
+		for _, order := range query.Order {
+			if order.Desc {
+				orderParts = append(orderParts, fmt.Sprintf("\"%s\" DESC", order.Field))
+			} else {
+				orderParts = append(orderParts, fmt.Sprintf("\"%s\" ASC", order.Field))
+			}
+		}
+		fmt.Fprintf(buf, " ORDER BY %s", strings.Join(orderParts, ", "))
+	}
+	if query.Limit != 0 {
+		fmt.Fprintf(buf, " LIMIT %d", query.Limit)
+	}
+	fmt.Fprint(buf, ";")
+	queryString := buf.String()
+	err := v.tx.SelectContext(v.snek.ctx, a, queryString, params...)
+	v.snek.logIf(v.snek.options.LogQuery, "QUERY(\"%s\", %+v) => %v", strings.ReplaceAll(queryString, "\"", "\\\""), params, err)
 	return err
 }
 
