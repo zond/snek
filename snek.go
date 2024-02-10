@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math/rand"
@@ -18,6 +19,10 @@ import (
 
 type ID []byte
 
+func (i ID) String() string {
+	return hex.EncodeToString(i)
+}
+
 var (
 	idType = reflect.TypeOf(ID{})
 )
@@ -31,7 +36,11 @@ type Snek struct {
 
 func (s *Snek) AssertTable(a any) error {
 	return s.Update(func(u *Update) error {
-		return u.exec(s.getValueInfo(a).toCreateStatement())
+		info, err := s.getValueInfo(reflect.ValueOf(a))
+		if err != nil {
+			return err
+		}
+		return u.exec(info.toCreateStatement())
 	})
 }
 
@@ -141,13 +150,13 @@ func (c Comparator) String() string {
 	}
 }
 
-type Condition struct {
+type Cond struct {
 	Field      string
-	Value      any
 	Comparator Comparator
+	Value      any
 }
 
-func (c *Condition) toWhereCondition() (string, []any) {
+func (c Cond) toWhereCondition() (string, []any) {
 	return fmt.Sprintf("\"%s\" %s ?", c.Field, c.Comparator.String()), []any{c.Value}
 }
 
@@ -177,10 +186,25 @@ func (o Or) toWhereCondition() (string, []any) {
 	return strings.Join(stringParts, " OR "), valueParts
 }
 
+func (v *View) Select(a any, set Set) error {
+	typ := reflect.TypeOf(a)
+	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Slice || typ.Elem().Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("only pointers to slices of structs allowed, not %v", a)
+	}
+	condition, params := set.toWhereCondition()
+	query := fmt.Sprintf("SELECT * FROM \"%s\" WHERE %s;", typ.Elem().Elem().Name(), condition)
+	err := v.tx.SelectContext(v.snek.ctx, a, query, params...)
+	v.snek.logIf(v.snek.options.LogQuery, "QUERY(\"%s\", %+v) => %v", strings.ReplaceAll(query, "\"", "\\\""), params, err)
+	return err
+}
+
 func (v *View) Get(a any) error {
-	info := v.snek.getValueInfo(a)
+	info, err := v.snek.getValueInfo(reflect.ValueOf(a))
+	if err != nil {
+		return err
+	}
 	query, params := info.toGetStatement()
-	err := v.tx.GetContext(v.snek.ctx, a, query, params...)
+	err = v.tx.GetContext(v.snek.ctx, a, query, params...)
 	v.snek.logIf(v.snek.options.LogQuery, "QUERY(\"%s\", %+v) => %v", strings.ReplaceAll(query, "\"", "\\\""), params, err)
 	return err
 }
@@ -334,25 +358,25 @@ func (i *valueInfo) fields() fieldInfoMap {
 	return i._fields
 }
 
-func (s *Snek) getValueInfo(a any) *valueInfo {
-	val := reflect.ValueOf(a)
-	for val.Type().Kind() == reflect.Ptr {
-		val = val.Elem()
+func (s *Snek) getValueInfo(val reflect.Value) (*valueInfo, error) {
+	if val.Kind() != reflect.Ptr || val.Type().Elem().Kind() != reflect.Struct {
+		return nil, fmt.Errorf("only pointers to structs allowed, not %v", val.Interface())
 	}
+	val = val.Elem()
 	typ := val.Type()
 	if typ.Kind() != reflect.Struct {
-		panic(fmt.Errorf("only struct types allowed, not %v", a))
+		return nil, fmt.Errorf("only struct types allowed, not %v", val.Interface())
 	}
 	idField, found := typ.FieldByName("ID")
 	if !found || idField.Type != idType {
-		panic(fmt.Errorf("only struct types with ID of type ID allowed, not %v", a))
+		return nil, fmt.Errorf("only struct types with ID field of type ID allowed, not %v", val.Interface())
 	}
-	id := val.FieldByIndex(idField.Index)
+	id := val.FieldByIndex(idField.Index).Interface().(ID)
 	return &valueInfo{
 		val: val,
 		typ: val.Type(),
-		id:  id.Interface().(ID),
-	}
+		id:  id,
+	}, nil
 }
 
 func (s *Snek) Update(f func(*Update) error) error {
@@ -378,12 +402,20 @@ func (s *Snek) Update(f func(*Update) error) error {
 }
 
 func (u *Update) Update(a any) error {
-	query, params := u.snek.getValueInfo(a).toUpdateStatement()
+	info, err := u.snek.getValueInfo(reflect.ValueOf(a))
+	if err != nil {
+		return err
+	}
+	query, params := info.toUpdateStatement()
 	return u.exec(query, params...)
 }
 
 func (u *Update) Insert(a any) error {
-	query, params := u.snek.getValueInfo(a).toInsertStatement()
+	info, err := u.snek.getValueInfo(reflect.ValueOf(a))
+	if err != nil {
+		return err
+	}
+	query, params := info.toInsertStatement()
 	return u.exec(query, params...)
 }
 
