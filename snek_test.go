@@ -53,6 +53,28 @@ func mustList[T any](t *testing.T, elements []T, ids []ID) {
 	}
 }
 
+func (t *testSnek) mustTrue(b bool, err error) {
+	if err != nil {
+		t.t.Helper()
+		t.t.Errorf("got %v, wanted no error", err)
+	}
+	if !b {
+		t.t.Helper()
+		t.t.Errorf("got %v, wanted true", b)
+	}
+}
+
+func (t *testSnek) mustFalse(b bool, err error) {
+	if err != nil {
+		t.t.Helper()
+		t.t.Errorf("got %v, wanted no error", err)
+	}
+	if b {
+		t.t.Helper()
+		t.t.Errorf("got %v, wanted false", b)
+	}
+}
+
 func (t *testSnek) must(err error) {
 	if err != nil {
 		t.t.Helper()
@@ -205,6 +227,10 @@ func TestSelect(t *testing.T) {
 }
 
 func TestIncludes(t *testing.T) {
-	//ts1 := &testStruct{ID: s.NewID(), String: "string1", Int: 1, Inner: innerTestStruct{Float: 1}}
-	//IMPLEMENTME
+	withSnek(t, func(s *testSnek) {
+		ts := reflect.ValueOf(&testStruct{ID: s.NewID(), String: "string1", Int: 1, Inner: innerTestStruct{Float: 1}})
+		s.mustTrue(Cond{"String", EQ, "string1"}.includes(ts))
+		s.mustFalse(Cond{"String", NE, "string1"}.includes(ts))
+		s.mustTrue(Or{Cond{"String", NE, "string1"}, Cond{"String", EQ, "string1"}}.includes(ts))
+	})
 }
