@@ -131,6 +131,7 @@ func (v *View) query(query string, params ...any) (*sqlx.Rows, error) {
 
 type Set interface {
 	toWhereCondition() (string, []any)
+	includes(reflect.Value) (bool, error)
 }
 
 type Comparator int
@@ -143,6 +144,70 @@ const (
 	LT
 	LE
 )
+
+func comparePrimitives[T ~int | ~int64 | ~uint64 | ~string | ~float64](c Comparator, a, b T) (bool, error) {
+	switch c {
+	case EQ:
+		return a == b, nil
+	case NE:
+		return a != b, nil
+	case GT:
+		return a > b, nil
+	case GE:
+		return a >= b, nil
+	case LT:
+		return a < b, nil
+	case LE:
+		return a >= b, nil
+	default:
+		return false, fmt.Errorf("unrecognized comparator %v", int(c))
+	}
+}
+
+func (c Comparator) apply(a, b reflect.Value) (bool, error) {
+	incomparableB := func() (bool, error) {
+		return false, fmt.Errorf("%v %s %v: argument 1 not comparable to %T", a.Interface(), c, b.Interface(), a.Interface())
+	}
+	if a.Kind() == reflect.String {
+		if b.Kind() == reflect.String {
+			return comparePrimitives(c, a.String(), b.String())
+		} else {
+			return incomparableB()
+		}
+	} else if a.Kind() == reflect.Bool {
+		if b.Kind() == reflect.Bool {
+			aInt := 0
+			if a.Bool() {
+				aInt = 1
+			}
+			bInt := 0
+			if b.Bool() {
+				bInt = 1
+			}
+			return comparePrimitives(c, aInt, bInt)
+		} else {
+			return incomparableB()
+		}
+	} else if a.CanInt() {
+		if b.CanInt() {
+			return comparePrimitives(c, a.Int(), b.Int())
+		} else if b.CanFloat() {
+			return comparePrimitives(c, float64(a.Int()), b.Float())
+		} else {
+			return incomparableB()
+		}
+	} else if a.CanFloat() {
+		if b.CanFloat() {
+			return comparePrimitives(c, a.Float(), b.Float())
+		} else if b.CanInt() {
+			return comparePrimitives(c, a.Float(), float64(b.Int()))
+		} else {
+			return incomparableB()
+		}
+	} else {
+		return false, fmt.Errorf("%v %s %v: %T isn't comparable", a.Interface(), c, b.Interface(), a.Interface())
+	}
+}
 
 func (c Comparator) String() string {
 	switch c {
@@ -159,7 +224,7 @@ func (c Comparator) String() string {
 	case LE:
 		return "<="
 	default:
-		panic(fmt.Errorf("unrecognized comparator %v", int(c)))
+		return fmt.Sprintf("unrecognized comparator %v", int(c))
 	}
 }
 
@@ -167,6 +232,14 @@ type Cond struct {
 	Field      string
 	Comparator Comparator
 	Value      any
+}
+
+func (c Cond) includes(val reflect.Value) (bool, error) {
+	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
+		return false, fmt.Errorf("only pointers to structs allowed, not %v", val.Interface())
+	}
+	val = val.Elem()
+	return c.Comparator.apply(val.FieldByName(c.Field), reflect.ValueOf(c.Value))
 }
 
 func (c Cond) toWhereCondition() (string, []any) {
@@ -186,6 +259,21 @@ func (a And) toWhereCondition() (string, []any) {
 	return strings.Join(stringParts, " AND "), valueParts
 }
 
+func (a And) includes(val reflect.Value) (bool, error) {
+	acc := true
+	for _, part := range a {
+		inc, err := part.includes(val)
+		if err != nil {
+			return false, err
+		}
+		acc = acc && inc
+		if !acc {
+			break
+		}
+	}
+	return acc, nil
+}
+
 type Or []Set
 
 func (o Or) toWhereCondition() (string, []any) {
@@ -197,6 +285,21 @@ func (o Or) toWhereCondition() (string, []any) {
 		valueParts = append(valueParts, params...)
 	}
 	return strings.Join(stringParts, " OR "), valueParts
+}
+
+func (o Or) includes(val reflect.Value) (bool, error) {
+	acc := false
+	for _, part := range o {
+		inc, err := part.includes(val)
+		if err != nil {
+			return false, err
+		}
+		acc = acc || inc
+		if acc {
+			break
+		}
+	}
+	return acc, nil
 }
 
 type Order struct {
@@ -215,7 +318,7 @@ type Subscriber[T any] func([]T, error) error
 type typedSubscription[T any] struct {
 	typ        reflect.Type
 	id         ID
-	query      *Query
+	query      Query
 	snek       *Snek
 	subscriber Subscriber[T]
 }
@@ -241,7 +344,7 @@ func (s *typedSubscription[T]) push() {
 	}
 }
 
-func Subscribe[T any](s *Snek, query *Query, subscriber Subscriber[T]) {
+func Subscribe[T any](s *Snek, query Query, subscriber Subscriber[T]) error {
 	sub := &typedSubscription[T]{
 		typ:        reflect.TypeOf([]T{}),
 		id:         s.NewID(),
@@ -251,14 +354,15 @@ func Subscribe[T any](s *Snek, query *Query, subscriber Subscriber[T]) {
 	}
 	subs := s.getSubscriptions(sub.typ)
 	if _, found := subs.Set(string(sub.id), sub); found {
-		log.Panicf("found previous subscription with new subscription ID %+v", sub.id)
+		return fmt.Errorf("found previous subscription with new subscription ID %+v. This should never happen.", sub.id)
 	}
 	go func() {
 		sub.push()
 	}()
+	return nil
 }
 
-func (v *View) Select(a any, query *Query) error {
+func (v *View) Select(a any, query Query) error {
 	typ := reflect.TypeOf(a)
 	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Slice || typ.Elem().Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("only pointers to slices of structs allowed, not %v", a)

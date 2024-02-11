@@ -162,39 +162,39 @@ func TestSelect(t *testing.T) {
 		}))
 		s.must(s.View(func(v *View) error {
 			res := []testStruct{}
-			s.must(v.Select(&res, &Query{Set: Or{
+			s.must(v.Select(&res, Query{Set: Or{
 				Cond{"String", EQ, "string1"},
 				Cond{"String", EQ, "string2"}}}))
 			mustContain(t, res, []ID{ts1.ID, ts2.ID})
-			s.must(v.Select(&res, &Query{Set: And{
+			s.must(v.Select(&res, Query{Set: And{
 				Cond{"String", EQ, "string1"},
 				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{})
-			s.must(v.Select(&res, &Query{Set: And{
+			s.must(v.Select(&res, Query{Set: And{
 				Or{
 					Cond{"String", EQ, "string1"},
 					Cond{"String", EQ, "string2"}},
 				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{ts2.ID})
-			s.must(v.Select(&res, &Query{Set: Or{
+			s.must(v.Select(&res, Query{Set: Or{
 				And{
 					Cond{"String", EQ, "string1"},
 					Cond{"Int", EQ, 2}},
 				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{ts2.ID})
-			s.must(v.Select(&res, &Query{Set: Cond{"Int", GT, 0}}))
+			s.must(v.Select(&res, Query{Set: Cond{"Int", GT, 0}}))
 			mustContain(t, res, []ID{ts1.ID, ts2.ID, ts3.ID, ts4.ID})
-			s.must(v.Select(&res, &Query{
+			s.must(v.Select(&res, Query{
 				Limit: 2,
 				Order: []Order{{"Int", true}},
 				Set:   Cond{"Int", GT, 0}}))
 			mustList(t, res, []ID{ts4.ID, ts3.ID})
-			s.must(v.Select(&res, &Query{
+			s.must(v.Select(&res, Query{
 				Limit: 2,
 				Order: []Order{{"Int", false}},
 				Set:   Cond{"Int", GT, 0}}))
 			mustList(t, res, []ID{ts1.ID, ts2.ID})
-			s.must(v.Select(&res, &Query{
+			s.must(v.Select(&res, Query{
 				Limit: 2,
 				Order: []Order{{"Inner.Float", true}, {"Int", false}},
 				Set:   Cond{"Int", LE, 3}}))
@@ -202,4 +202,9 @@ func TestSelect(t *testing.T) {
 			return nil
 		}))
 	})
+}
+
+func TestIncludes(t *testing.T) {
+	//ts1 := &testStruct{ID: s.NewID(), String: "string1", Int: 1, Inner: innerTestStruct{Float: 1}}
+	//IMPLEMENTME
 }
