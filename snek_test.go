@@ -232,5 +232,6 @@ func TestIncludes(t *testing.T) {
 		s.mustTrue(Cond{"String", EQ, "string1"}.includes(ts))
 		s.mustFalse(Cond{"String", NE, "string1"}.includes(ts))
 		s.mustTrue(Or{Cond{"String", NE, "string1"}, Cond{"String", EQ, "string1"}}.includes(ts))
+		s.mustTrue(All{}.includes(ts))
 	})
 }
