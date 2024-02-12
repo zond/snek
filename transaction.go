@@ -79,16 +79,20 @@ func (v *View) Select(structSlicePointer any, query Query) error {
 	return err
 }
 
+func (v *View) get(structPointer any, info *valueInfo) error {
+	query, params := info.toGetStatement()
+	err := v.tx.GetContext(v.snek.ctx, structPointer, query, params...)
+	logSQL(v.snek, "QUERY", query, params, err)
+	return err
+}
+
 // Get populates structPointer with the data at structPointer.ID in the store.
 func (v *View) Get(structPointer any) error {
 	info, err := v.snek.getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}
-	query, params := info.toGetStatement()
-	err = v.tx.GetContext(v.snek.ctx, structPointer, query, params...)
-	logSQL(v.snek, "QUERY", query, params, err)
-	return err
+	return v.get(structPointer, info)
 }
 
 // Update executs f in the context of a read/write transaction.
@@ -120,20 +124,27 @@ func (s *Snek) Update(f func(*Update) error) error {
 	return nil
 }
 
+func (u *Update) addSubscriptionsForCurrent(info *valueInfo) error {
+	existingVal := reflect.New(info.typ)
+	if err := u.get(existingVal.Interface(), info); err != nil {
+		return err
+	}
+	u.subscriptions.merge(u.snek.getSubscriptionsFor(existingVal))
+	return nil
+}
+
 // Remove removes the data at structPointer.ID.
 func (u *Update) Remove(structPointer any) error {
 	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}
-	existing := reflect.New(reflect.TypeOf(structPointer).Elem()).Interface()
-	query, params := info.toGetStatement()
-	logSQL(u.snek, "QUERY", query, params, err)
-	if err = u.tx.GetContext(u.snek.ctx, existing, query, params...); err != nil {
+
+	if err := u.addSubscriptionsForCurrent(info); err != nil {
 		return err
 	}
-	u.subscriptions.merge(u.snek.getSubscriptionsFor(reflect.ValueOf(existing)))
-	query, params = info.toDelStatement()
+
+	query, params := info.toDelStatement()
 	if err := u.exec(query, params...); err != nil {
 		return err
 	}
@@ -146,14 +157,12 @@ func (u *Update) Update(structPointer any) error {
 	if err != nil {
 		return err
 	}
-	existingVal := reflect.New(reflect.TypeOf(structPointer).Elem())
-	query, params := info.toGetStatement()
-	logSQL(u.snek, "QUERY", query, params, err)
-	if err = u.tx.GetContext(u.snek.ctx, existingVal.Interface(), query, params...); err != nil {
+
+	if err := u.addSubscriptionsForCurrent(info); err != nil {
 		return err
 	}
-	u.subscriptions.merge(u.snek.getSubscriptionsFor(existingVal))
-	query, params = info.toUpdateStatement()
+
+	query, params := info.toUpdateStatement()
 	if err := u.exec(query, params...); err != nil {
 		return err
 	}
@@ -163,16 +172,16 @@ func (u *Update) Update(structPointer any) error {
 
 // Insert places the data inside structPointer at structPointer.ID.
 func (u *Update) Insert(structPointer any) error {
-	val := reflect.ValueOf(structPointer)
-	info, err := u.snek.getValueInfo(val)
+	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}
+
 	query, params := info.toInsertStatement()
 	if err := u.exec(query, params...); err != nil {
 		return err
 	}
-	u.subscriptions.merge(u.snek.getSubscriptionsFor(val))
+	u.subscriptions.merge(u.snek.getSubscriptionsFor(info.val))
 	return nil
 }
 
