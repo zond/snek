@@ -8,7 +8,7 @@ import (
 
 type Set interface {
 	toWhereCondition() (string, []any)
-	includes(reflect.Value) (bool, error)
+	matches(reflect.Value) (bool, error)
 }
 
 type All struct{}
@@ -17,7 +17,7 @@ func (a All) toWhereCondition() (string, []any) {
 	return "(1 = 1)", nil
 }
 
-func (a All) includes(reflect.Value) (bool, error) {
+func (a All) matches(reflect.Value) (bool, error) {
 	return true, nil
 }
 
@@ -121,7 +121,7 @@ type Cond struct {
 	Value      any
 }
 
-func (c Cond) includes(val reflect.Value) (bool, error) {
+func (c Cond) matches(val reflect.Value) (bool, error) {
 	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
 		return false, fmt.Errorf("only pointers to structs allowed, not %v", val.Interface())
 	}
@@ -146,10 +146,10 @@ func (a And) toWhereCondition() (string, []any) {
 	return strings.Join(stringParts, " AND "), valueParts
 }
 
-func (a And) includes(val reflect.Value) (bool, error) {
+func (a And) matches(val reflect.Value) (bool, error) {
 	acc := true
 	for _, part := range a {
-		inc, err := part.includes(val)
+		inc, err := part.matches(val)
 		if err != nil {
 			return false, err
 		}
@@ -174,10 +174,10 @@ func (o Or) toWhereCondition() (string, []any) {
 	return strings.Join(stringParts, " OR "), valueParts
 }
 
-func (o Or) includes(val reflect.Value) (bool, error) {
+func (o Or) matches(val reflect.Value) (bool, error) {
 	acc := false
 	for _, part := range o {
-		inc, err := part.includes(val)
+		inc, err := part.matches(val)
 		if err != nil {
 			return false, err
 		}

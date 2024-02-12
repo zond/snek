@@ -232,12 +232,12 @@ func TestSelect(t *testing.T) {
 	})
 }
 
-func TestIncludes(t *testing.T) {
+func TestSetMatches(t *testing.T) {
 	withSnek(t, func(s *testSnek) {
 		ts := reflect.ValueOf(&testStruct{ID: s.NewID(), String: "string1", Int: 1, Inner: innerTestStruct{Float: 1}})
-		s.mustTrue(Cond{"String", EQ, "string1"}.includes(ts))
-		s.mustFalse(Cond{"String", NE, "string1"}.includes(ts))
-		s.mustTrue(Or{Cond{"String", NE, "string1"}, Cond{"String", EQ, "string1"}}.includes(ts))
-		s.mustTrue(All{}.includes(ts))
+		s.mustTrue(Cond{"String", EQ, "string1"}.matches(ts))
+		s.mustFalse(Cond{"String", NE, "string1"}.matches(ts))
+		s.mustTrue(Or{Cond{"String", NE, "string1"}, Cond{"String", EQ, "string1"}}.matches(ts))
+		s.mustTrue(All{}.matches(ts))
 	})
 }
