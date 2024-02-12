@@ -26,6 +26,7 @@ type testSnek struct {
 }
 
 func mustContain[T any](t *testing.T, elements []T, ids []ID) {
+	t.Helper()
 	idSet := map[string]bool{}
 	for _, id := range ids {
 		idSet[id.String()] = true
@@ -33,58 +34,54 @@ func mustContain[T any](t *testing.T, elements []T, ids []ID) {
 	for _, element := range elements {
 		stringID := reflect.ValueOf(element).FieldByName("ID").Interface().(ID).String()
 		if !idSet[stringID] {
-			t.Helper()
 			t.Errorf("wanted %+v to contain exactly %+v, but found %v", elements, ids, stringID)
 		}
 		delete(idSet, stringID)
 	}
 	if len(idSet) > 0 {
-		t.Helper()
 		t.Errorf("wanted %+v to contain exactly %+v, but didn't contain %v", elements, ids, len(idSet))
 	}
 }
 
 func mustList[T any](t *testing.T, elements []T, ids []ID) {
+	t.Helper()
 	for i := range elements {
 		if reflect.ValueOf(elements[i]).FieldByName("ID").Interface().(ID).String() != ids[i].String() {
-			t.Helper()
 			t.Errorf("wanted %+v to contain exactly %+v", elements, ids)
 		}
 	}
 }
 
 func (t *testSnek) mustTrue(b bool, err error) {
+	t.t.Helper()
 	if err != nil {
-		t.t.Helper()
 		t.t.Errorf("got %v, wanted no error", err)
 	}
 	if !b {
-		t.t.Helper()
 		t.t.Errorf("got %v, wanted true", b)
 	}
 }
 
 func (t *testSnek) mustFalse(b bool, err error) {
+	t.t.Helper()
 	if err != nil {
-		t.t.Helper()
 		t.t.Errorf("got %v, wanted no error", err)
 	}
 	if b {
-		t.t.Helper()
 		t.t.Errorf("got %v, wanted false", b)
 	}
 }
 
 func (t *testSnek) must(err error) {
+	t.t.Helper()
 	if err != nil {
-		t.t.Helper()
 		t.t.Errorf("got %v, wanted no error", err)
 	}
 }
 
 func (t *testSnek) mustNot(err error) {
+	t.t.Helper()
 	if err == nil {
-		t.t.Helper()
 		t.t.Errorf("got nil, wanted some error")
 	}
 }
@@ -241,3 +238,66 @@ func TestSetMatches(t *testing.T) {
 		s.mustTrue(All{}.matches(ts))
 	})
 }
+
+func testComparatorExcludesContains[T ~int | ~float32](t *testing.T, values []T) {
+	TODO(make this complete?)
+	comparators := []Comparator{EQ, NE, GT, GE, LT, LE}
+	for _, cmp1 := range comparators {
+		for _, cmp2 := range comparators {
+			excluder, found := excludes[cmp1][cmp2]
+			if !found {
+				excluder = func(a, b reflect.Value) (bool, error) {
+					return false, nil
+				}
+			}
+			container, found := contains[cmp1][cmp2]
+			if !found {
+				container = func(a, b reflect.Value) (bool, error) {
+					return false, nil
+				}
+			}
+			for _, a := range values {
+				valA := reflect.ValueOf(a)
+				for _, b := range values {
+					valB := reflect.ValueOf(b)
+					match1, err := cmp1.apply(valA, valB)
+					if err != nil {
+						t.Fatal(err)
+					}
+					match2, err := cmp2.apply(valA, valB)
+					if err != nil {
+						t.Fatal(err)
+					}
+					gotExclude, err := excluder(valA, valB)
+					if err != nil {
+						t.Fatal(err)
+					}
+					gotContain, err := container(valA, valB)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if gotExclude && match1 && match2 {
+						t.Errorf("%v %v %v (%v) and %v %v %v (%v) should be exclusive", a, cmp1, b, match1, a, cmp2, b, match2)
+					}
+					if gotContain && match2 && !match1 {
+						t.Errorf("%v %v %v (%v) and %v %v %v (%v) should be containing", a, cmp1, b, match1, a, cmp2, b, match2)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestComparatorExcludesContains(t *testing.T) {
+	testComparatorExcludesContains(t, []int{2, 3, 4, 5, 6})
+}
+
+//func TestSetExcludes(t *testing.T) {
+//	withSnek(t, func(s *testSnek) {
+//		s.mustTrue(Cond{"A", EQ, 5}.excludes(Cond{"A", NE, 5}))
+//		s.mustTrue(Cond{"String", EQ, "string1"}.matches(ts))
+//		s.mustFalse(Cond{"String", NE, "string1"}.matches(ts))
+//		s.mustTrue(Or{Cond{"String", NE, "string1"}, Cond{"String", EQ, "string1"}}.matches(ts))
+//		s.mustTrue(All{}.matches(ts))
+//	})
+//}
