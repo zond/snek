@@ -133,7 +133,7 @@ type testStruct struct {
 	Inner  innerTestStruct
 }
 
-func TestInsertGetUpdate(t *testing.T) {
+func TestInsertGetUpdateRemove(t *testing.T) {
 	withSnek(t, func(s *testSnek) {
 		ts := &testStruct{ID: s.NewID(), String: "string"}
 		ts2 := &testStruct{ID: ts.ID}
@@ -166,6 +166,12 @@ func TestInsertGetUpdate(t *testing.T) {
 		if ts2.String != ts.String {
 			t.Errorf("got %v, want %v", ts2.String, ts.String)
 		}
+		s.must(s.Update(func(u *Update) error {
+			return u.Remove(ts)
+		}))
+		s.mustNot(s.View(func(v *View) error {
+			return v.Get(ts)
+		}))
 	})
 }
 

@@ -49,6 +49,10 @@ func (i *valueInfo) toGetStatement() (string, []any) {
 	return fmt.Sprintf("SELECT * FROM \"%s\" WHERE \"ID\" = ?;", i.typ.Name()), []any{i.id}
 }
 
+func (i *valueInfo) toDelStatement() (string, []any) {
+	return fmt.Sprintf("DELETE FROM \"%s\" WHERE \"ID\" = ?;", i.typ.Name()), []any{i.id}
+}
+
 func (i *valueInfo) toInsertStatement() (string, []any) {
 	builder := &bytes.Buffer{}
 	fmt.Fprintf(builder, "INSERT INTO \"%s\"\n  (", i.typ.Name())

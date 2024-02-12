@@ -30,6 +30,23 @@ type subscription interface {
 	getID() ID
 }
 
+type subscriptionSet map[string]subscription
+
+func (s subscriptionSet) push() {
+	for _, sub := range s {
+		go func() {
+			sub.push()
+		}()
+	}
+}
+
+func (s subscriptionSet) merge(other subscriptionSet) subscriptionSet {
+	for id, sub := range other {
+		s[id] = sub
+	}
+	return s
+}
+
 // Snek maintains a persistent, subscribable, and access controlled data store.
 type Snek struct {
 	ctx           context.Context
@@ -37,6 +54,16 @@ type Snek struct {
 	options       Options
 	rng           *rand.Rand
 	subscriptions *synch.SMap[string, *synch.SMap[string, subscription]]
+}
+
+func (s *Snek) getSubscriptionsFor(val reflect.Value) subscriptionSet {
+	result := subscriptionSet{}
+	s.getSubscriptions(val.Type()).Each(func(id string, sub subscription) {
+		if sub.matches(val) {
+			result[id] = sub
+		}
+	})
+	return result
 }
 
 func (s *Snek) getSubscriptions(typ reflect.Type) *synch.SMap[string, subscription] {

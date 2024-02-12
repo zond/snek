@@ -20,6 +20,7 @@ type View struct {
 // Update represents a read/write transaction.
 type Update struct {
 	View
+	subscriptions subscriptionSet
 }
 
 // View executs f in the context of a read-only transaction.
@@ -99,18 +100,44 @@ func (s *Snek) Update(f func(*Update) error) error {
 	if err != nil {
 		return err
 	}
+	subscriptions := subscriptionSet{}
 	if err := f(&Update{
 		View: View{
 			tx:   tx,
 			snek: s,
 		},
+		subscriptions: subscriptions,
 	}); err != nil {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil {
 			log.Fatal(rollbackErr)
 		}
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	subscriptions.push()
+	return nil
+}
+
+// Remove removes the data at structPointer.ID.
+func (u *Update) Remove(structPointer any) error {
+	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
+	if err != nil {
+		return err
+	}
+	existing := reflect.New(reflect.TypeOf(structPointer).Elem()).Interface()
+	query, params := info.toGetStatement()
+	logSQL(u.snek, "QUERY", query, params, err)
+	if err = u.tx.GetContext(u.snek.ctx, existing, query, params...); err != nil {
+		return err
+	}
+	u.subscriptions.merge(u.snek.getSubscriptionsFor(reflect.ValueOf(existing)))
+	query, params = info.toDelStatement()
+	if err := u.exec(query, params...); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Update replaces the data at structPointer.ID with the data inside structPointer.
@@ -119,18 +146,34 @@ func (u *Update) Update(structPointer any) error {
 	if err != nil {
 		return err
 	}
-	query, params := info.toUpdateStatement()
-	return u.exec(query, params...)
+	existingVal := reflect.New(reflect.TypeOf(structPointer).Elem())
+	query, params := info.toGetStatement()
+	logSQL(u.snek, "QUERY", query, params, err)
+	if err = u.tx.GetContext(u.snek.ctx, existingVal.Interface(), query, params...); err != nil {
+		return err
+	}
+	u.subscriptions.merge(u.snek.getSubscriptionsFor(existingVal))
+	query, params = info.toUpdateStatement()
+	if err := u.exec(query, params...); err != nil {
+		return err
+	}
+	u.subscriptions.merge(u.snek.getSubscriptionsFor(info.val))
+	return nil
 }
 
 // Insert places the data inside structPointer at structPointer.ID.
 func (u *Update) Insert(structPointer any) error {
-	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
+	val := reflect.ValueOf(structPointer)
+	info, err := u.snek.getValueInfo(val)
 	if err != nil {
 		return err
 	}
 	query, params := info.toInsertStatement()
-	return u.exec(query, params...)
+	if err := u.exec(query, params...); err != nil {
+		return err
+	}
+	u.subscriptions.merge(u.snek.getSubscriptionsFor(val))
+	return nil
 }
 
 func (u *Update) exec(query string, params ...any) error {

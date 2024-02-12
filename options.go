@@ -6,6 +6,7 @@ import (
 	"math/rand"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/zond/snek/synch"
 )
 
 type Options struct {
@@ -31,9 +32,10 @@ func (o Options) Open() (*Snek, error) {
 		return s
 	})
 	return &Snek{
-		ctx:     context.Background(),
-		db:      db,
-		options: o,
-		rng:     rand.New(rand.NewSource(o.RandomSeed)),
+		ctx:           context.Background(),
+		db:            db,
+		options:       o,
+		rng:           rand.New(rand.NewSource(o.RandomSeed)),
+		subscriptions: synch.NewSMap[string, *synch.SMap[string, subscription]](),
 	}, nil
 }
