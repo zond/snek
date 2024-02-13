@@ -9,7 +9,12 @@ import (
 type Set interface {
 	toWhereCondition() (string, []any)
 	matches(reflect.Value) (bool, error)
-	excludes(Set) (bool, error)
+	// Returns true if this set contains the value referred to by structPointer.
+	Matches(structPointer any) (bool, error)
+	// Returns true if there is no intersection between this set and otherSet.
+	Excludes(otherSet Set) (bool, error)
+	// Returns true if otherSet is a subset of this set.
+	Includes(otherSet Set) (bool, error)
 }
 
 type All struct{}
@@ -22,8 +27,16 @@ func (a All) matches(reflect.Value) (bool, error) {
 	return true, nil
 }
 
-func (a All) excludes(s Set) bool {
-	return false
+func (a All) Excludes(s Set) (bool, error) {
+	return false, nil
+}
+
+func (a All) Includes(s Set) (bool, error) {
+	return true, nil
+}
+
+func (a All) Matches(structPointer any) (bool, error) {
+	return true, nil
 }
 
 type Comparator int
@@ -120,143 +133,188 @@ func (c Comparator) String() string {
 	}
 }
 
-var (
-	// map[cmp1]map[cmp2]cmp3:
-	// cmp3(a,b) => !(cmp1(x,a) && cmp2(x,b))
-	excludes = map[Comparator]map[Comparator]func(reflect.Value, reflect.Value) (bool, error){
-		//     -----------x-----------
-		EQ: {
-			// -----------x-----------
-			EQ: NE.apply,
-			// xxxxxxxxxxx-xxxxxxxxxxx
-			NE: EQ.apply,
-			// ------------xxxxxxxxxxx
-			GT: LE.apply,
-			// -----------xxxxxxxxxxxx
-			GE: LT.apply,
-			// xxxxxxxxxx-------------
-			LT: GE.apply,
-			// xxxxxxxxxxx------------
-			LE: GT.apply,
-		},
-		//     xxxxxxxxxxx-xxxxxxxxxxx
-		NE: {
-			// -----------x-----------
-			EQ: EQ.apply,
-		},
-		//     ------------xxxxxxxxxxx
-		GT: {
-			// -----------x-----------
-			EQ: LE.apply,
-			// xxxxxxxxxx-------------
-			LT: func(a, b reflect.Value) (bool, error) {
-				if a.CanInt() && b.CanInt() {
-					return b.Int()+1 <= a.Int(), nil
-				}
-				return LE.apply(a, b)
-			},
-			// xxxxxxxxxxx------------
-			LE: LE.apply,
-		},
-		//     -----------xxxxxxxxxxxx
-		GE: {
-			// -----------x-----------
-			EQ: LT.apply,
-			// xxxxxxxxxx-------------
-			LT: LE.apply,
-			// xxxxxxxxxxx------------
-			LE: LT.apply,
-		},
-		//     xxxxxxxxxx-------------
-		LT: {
-			// -----------x-----------
-			EQ: GE.apply,
-			// -----------xxxxxxxxxxxx
-			GE: GE.apply,
-			// ------------xxxxxxxxxxx
-			GT: func(a, b reflect.Value) (bool, error) {
-				if a.CanInt() && b.CanInt() {
-					return b.Int()-1 >= a.Int(), nil
-				}
-				return GE.apply(a, b)
-			},
-		},
-		//     xxxxxxxxxxx------------
-		LE: {
-			// -----------x-----------
-			EQ: GT.apply,
-			// -----------xxxxxxxxxxxx
-			GE: GT.apply,
-			// ------------xxxxxxxxxxx
-			GT: GE.apply,
-		},
+type comparison func(reflect.Value, reflect.Value) (bool, error)
+
+func noImplication(a, b reflect.Value) (bool, error) {
+	return false, nil
+}
+
+func incInt(aDelta, bDelta uint, f comparison) comparison {
+	return func(a, b reflect.Value) (bool, error) {
+		if a.CanInt() && b.CanInt() {
+			aFix := reflect.ValueOf(a.Int() + int64(aDelta))
+			bFix := reflect.ValueOf(b.Int() + int64(bDelta))
+			return f(aFix, bFix)
+		} else if a.CanUint() && b.CanUint() {
+			aFix := reflect.ValueOf(a.Uint() + uint64(aDelta))
+			bFix := reflect.ValueOf(b.Uint() + uint64(bDelta))
+			return f(aFix, bFix)
+		} else {
+			return f(a, b)
+		}
 	}
-	// map[cmp1]map[cmp2]cmp3:
-	// cmp3(a,b) => (cmp1(x,a) || !cmp2(x,b))
-	contains = map[Comparator]map[Comparator]func(reflect.Value, reflect.Value) (bool, error){
-		//     -----------x-----------
-		EQ: {
-			// -----------x-----------
-			EQ: EQ.apply,
-		},
-		//     xxxxxxxxxxx-xxxxxxxxxxx
-		NE: {
-			// xxxxxxxxxxx-xxxxxxxxxxx
-			NE: EQ.apply,
-		},
-		//     ------------xxxxxxxxxxx
-		GT: {
-			// -----------x-----------
-			EQ: GT.apply,
-			// ------------xxxxxxxxxxx
-			GT: GE.apply,
-			// -----------xxxxxxxxxxxx
-			GE: GT.apply,
-		},
-		//     -----------xxxxxxxxxxxx
-		GE: {
-			// -----------x-----------
-			EQ: GE.apply,
-			// ------------xxxxxxxxxxx
-			GT: func(a, b reflect.Value) (bool, error) {
-				if a.CanInt() && b.CanInt() {
-					return b.Int() >= a.Int()+1, nil
-				}
-				return GE.apply(a, b)
-			},
-			// -----------xxxxxxxxxxxx
-			GE: GE.apply,
-		},
-		//     xxxxxxxxxx-------------
-		LT: {
-			// -----------x-----------
-			EQ: LT.apply,
-			// xxxxxxxxxx-------------
-			LT: LE.apply,
-			// xxxxxxxxxxx------------
-			LE: LT.apply,
-		},
-		//     xxxxxxxxxxx------------
-		LE: {
-			// -----------x-----------
-			EQ: LE.apply,
-			// xxxxxxxxxx-------------
-			LT: func(a, b reflect.Value) (bool, error) {
-				if a.CanInt() && b.CanInt() {
-					return b.Int()+1 <= a.Int(), nil
-				}
-				return LE.apply(a, b)
-			},
-			// xxxxxxxxxxx------------
-			LE: LT.apply,
-		},
+}
+
+func implications(a, b Comparator) (isTrue, isFalse comparison, err error) {
+	unrecognizedComparator := func(c Comparator) (comparison, comparison, error) {
+		return nil, nil, fmt.Errorf("unrecognized comparator %v", int(c))
 	}
-)
+	switch a {
+	case EQ:
+		switch b {
+		case EQ:
+			return EQ.apply, NE.apply, nil
+		case NE:
+			return NE.apply, EQ.apply, nil
+		case GT:
+			return GT.apply, LE.apply, nil
+		case GE:
+			return GE.apply, LT.apply, nil
+		case LT:
+			return LT.apply, GE.apply, nil
+		case LE:
+			return LE.apply, GT.apply, nil
+		default:
+			return unrecognizedComparator(b)
+		}
+	case NE:
+		switch b {
+		case EQ:
+			return noImplication, EQ.apply, nil
+		case NE:
+			return EQ.apply, noImplication, nil
+		case GT:
+			return noImplication, noImplication, nil
+		case GE:
+			return noImplication, noImplication, nil
+		case LT:
+			return noImplication, noImplication, nil
+		case LE:
+			return noImplication, noImplication, nil
+		default:
+			return unrecognizedComparator(b)
+		}
+	case GT:
+		switch b {
+		case EQ:
+			return noImplication, GE.apply, nil
+		case NE:
+			return GE.apply, noImplication, nil
+		case GT:
+			return GE.apply, noImplication, nil
+		case GE:
+			return incInt(1, 0, GE.apply), noImplication, nil
+		case LT:
+			return noImplication, incInt(1, 0, GE.apply), nil
+		case LE:
+			return noImplication, GE.apply, nil
+		default:
+			return unrecognizedComparator(b)
+		}
+	case GE:
+		switch b {
+		case EQ:
+			return noImplication, GT.apply, nil
+		case NE:
+			return GT.apply, noImplication, nil
+		case GT:
+			return GT.apply, noImplication, nil
+		case GE:
+			return GE.apply, noImplication, nil
+		case LT:
+			return noImplication, GE.apply, nil
+		case LE:
+			return noImplication, GT.apply, nil
+		default:
+			return unrecognizedComparator(b)
+		}
+	case LT:
+		switch b {
+		case EQ:
+			return noImplication, LE.apply, nil
+		case NE:
+			return LE.apply, noImplication, nil
+		case GT:
+			return noImplication, incInt(0, 1, LE.apply), nil
+		case GE:
+			return noImplication, LE.apply, nil
+		case LT:
+			return LE.apply, noImplication, nil
+		case LE:
+			return incInt(0, 1, LE.apply), noImplication, nil
+		default:
+			return unrecognizedComparator(b)
+		}
+	case LE:
+		switch b {
+		case EQ:
+			return noImplication, LT.apply, nil
+		case NE:
+			return LT.apply, noImplication, nil
+		case GT:
+			return noImplication, LE.apply, nil
+		case GE:
+			return noImplication, LT.apply, nil
+		case LT:
+			return LT.apply, noImplication, nil
+		case LE:
+			return LE.apply, noImplication, nil
+		default:
+			return unrecognizedComparator(b)
+		}
+	default:
+		return unrecognizedComparator(a)
+	}
+}
 
 type Cond struct {
 	Field      string
 	Comparator Comparator
 	Value      any
+}
+
+func (c Cond) Excludes(s Set) (bool, error) {
+	switch other := s.(type) {
+	case Cond:
+		if other.Field == c.Field {
+			if _, cImpliesNotOtherFun, err := implications(c.Comparator, other.Comparator); err != nil {
+				return false, err
+			} else {
+				if cImpliesNotOther, err := cImpliesNotOtherFun(reflect.ValueOf(c.Value), reflect.ValueOf(other.Value)); err != nil {
+					return false, err
+				} else {
+					return cImpliesNotOther, nil
+				}
+			}
+		}
+		return false, nil
+
+	}
+	return s.Excludes(c)
+}
+
+func (c Cond) Includes(s Set) (bool, error) {
+	switch other := s.(type) {
+	case Cond:
+		if other.Field == c.Field {
+			if cImpliesOtherFun, _, err := implications(c.Comparator, other.Comparator); err != nil {
+				return false, err
+			} else {
+				if cImpliesOther, err := cImpliesOtherFun(reflect.ValueOf(c.Value), reflect.ValueOf(other.Value)); err != nil {
+					return false, err
+				} else {
+					return cImpliesOther, nil
+				}
+			}
+		}
+		return false, nil
+
+	}
+	return s.Includes(c)
+}
+
+func (c Cond) Matches(structPointer any) (bool, error) {
+	return c.matches(reflect.ValueOf(structPointer))
 }
 
 func (c Cond) matches(val reflect.Value) (bool, error) {
@@ -265,19 +323,6 @@ func (c Cond) matches(val reflect.Value) (bool, error) {
 	}
 	val = val.Elem()
 	return c.Comparator.apply(val.FieldByName(c.Field), reflect.ValueOf(c.Value))
-}
-
-func (c Cond) excludes(s Set) (bool, error) {
-	// switch other := s.(type) {
-	// case Cond:
-	//
-	//	return false, nil
-	//
-	// default:
-	//
-	//		return s.excludes(c)
-	//	}
-	return false, nil
 }
 
 func (c Cond) toWhereCondition() (string, []any) {
@@ -297,10 +342,10 @@ func (a And) toWhereCondition() (string, []any) {
 	return strings.Join(stringParts, " AND "), valueParts
 }
 
-func (a And) excludes(s Set) (bool, error) {
+func (a And) Excludes(s Set) (bool, error) {
 	acc := false
 	for _, part := range a {
-		exc, err := part.excludes(s)
+		exc, err := part.Excludes(s)
 		if err != nil {
 			return false, err
 		}
@@ -310,6 +355,25 @@ func (a And) excludes(s Set) (bool, error) {
 		}
 	}
 	return acc, nil
+}
+
+func (a And) Includes(s Set) (bool, error) {
+	acc := false
+	for _, part := range a {
+		inc, err := part.Includes(s)
+		if err != nil {
+			return false, err
+		}
+		acc = acc || inc
+		if acc {
+			break
+		}
+	}
+	return acc, nil
+}
+
+func (a And) Matches(structPointer any) (bool, error) {
+	return a.matches(reflect.ValueOf(structPointer))
 }
 
 func (a And) matches(val reflect.Value) (bool, error) {
@@ -340,10 +404,10 @@ func (o Or) toWhereCondition() (string, []any) {
 	return strings.Join(stringParts, " OR "), valueParts
 }
 
-func (o Or) excludes(s Set) (bool, error) {
+func (o Or) Excludes(s Set) (bool, error) {
 	acc := true
 	for _, part := range o {
-		exc, err := part.excludes(s)
+		exc, err := part.Excludes(s)
 		if err != nil {
 			return false, err
 		}
@@ -353,6 +417,25 @@ func (o Or) excludes(s Set) (bool, error) {
 		}
 	}
 	return acc, nil
+}
+
+func (o Or) Includes(s Set) (bool, error) {
+	acc := true
+	for _, part := range o {
+		inc, err := part.Includes(s)
+		if err != nil {
+			return false, err
+		}
+		acc = acc && inc
+		if !acc {
+			break
+		}
+	}
+	return acc, nil
+}
+
+func (o Or) Matches(structPointer any) (bool, error) {
+	return o.matches(reflect.ValueOf(structPointer))
 }
 
 func (o Or) matches(val reflect.Value) (bool, error) {
