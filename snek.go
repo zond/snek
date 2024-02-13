@@ -33,10 +33,10 @@ type subscription interface {
 type subscriptionSet map[string]subscription
 
 func (s subscriptionSet) push() {
-	for _, sub := range s {
-		go func() {
-			sub.push()
-		}()
+	for _, loopSub := range s {
+		go func(s subscription) {
+			s.push()
+		}(loopSub)
 	}
 }
 

@@ -52,7 +52,7 @@ func (s *typedSubscription[T]) push() {
 // Once the subscriber returns an error it will be cleaned up and removed.
 func Subscribe[T any](s *Snek, query Query, subscriber Subscriber[T]) error {
 	sub := &typedSubscription[T]{
-		typ:        reflect.TypeOf([]T{}),
+		typ:        reflect.TypeOf(*new(T)),
 		id:         s.NewID(),
 		snek:       s,
 		query:      query,

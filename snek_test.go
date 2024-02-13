@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 var (
@@ -86,6 +87,16 @@ func (t *testSnek) mustNot(err error) {
 	}
 }
 
+func mustUnavail[T any](t *testing.T, c chan T) {
+	t.Helper()
+	timer := time.NewTimer(10 * time.Millisecond)
+	select {
+	case <-timer.C:
+	case v := <-c:
+		t.Errorf("wanted channel to have no data available, got %v", v)
+	}
+}
+
 func withSnek(t *testing.T, f func(s *testSnek)) {
 	dir, err := os.MkdirTemp(os.TempDir(), "snek_test")
 	if err != nil {
@@ -138,12 +149,38 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 			return v.Get(ts2)
 		}))
 		s.must(s.AssertTable(ts))
+		matchingString := make(chan []testStruct)
+		s.must(Subscribe(s.Snek, Query{Set: Cond{"String", EQ, "string"}}, func(res []testStruct, err error) error {
+			if err != nil {
+				t.Fatal(err)
+			}
+			matchingString <- res
+			return nil
+		}))
+		if got := <-matchingString; len(got) > 0 {
+			t.Errorf("wanted no results, got %+v", got)
+		}
+		matchingAnotherString := make(chan []testStruct)
+		s.must(Subscribe(s.Snek, Query{Set: Cond{"String", EQ, "another string"}}, func(res []testStruct, err error) error {
+			if err != nil {
+				t.Fatal(err)
+			}
+			matchingAnotherString <- res
+			return nil
+		}))
+		if got := <-matchingAnotherString; len(got) > 0 {
+			t.Errorf("wanted no results, got %+v", got)
+		}
 		s.mustNot(s.View(func(v *View) error {
 			return v.Get(ts2)
 		}))
 		s.must(s.Update(func(u *Update) error {
 			return u.Insert(ts)
 		}))
+		if got := <-matchingString; len(got) != 1 || got[0].ID.String() != ts.ID.String() {
+			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts})
+		}
+		mustUnavail(t, matchingAnotherString)
 		s.must(s.View(func(v *View) error {
 			return v.Get(ts2)
 		}))
@@ -157,6 +194,12 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		s.must(s.Update(func(u *Update) error {
 			return u.Update(ts)
 		}))
+		if got := <-matchingAnotherString; len(got) != 1 || got[0].ID.String() != ts.ID.String() {
+			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts})
+		}
+		if got := <-matchingString; len(got) != 0 {
+			t.Errorf("wanted no results, got %+v", got)
+		}
 		s.must(s.View(func(v *View) error {
 			return v.Get(ts2)
 		}))
@@ -166,6 +209,10 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		s.must(s.Update(func(u *Update) error {
 			return u.Remove(ts)
 		}))
+		if got := matchingAnotherString; len(got) != 0 {
+			t.Errorf("wanted no results, got %+v", got)
+		}
+		mustUnavail(t, matchingString)
 		s.mustNot(s.View(func(v *View) error {
 			return v.Get(ts)
 		}))
@@ -231,7 +278,7 @@ func TestSelect(t *testing.T) {
 
 func TestSetMatches(t *testing.T) {
 	withSnek(t, func(s *testSnek) {
-		ts := reflect.ValueOf(&testStruct{ID: s.NewID(), String: "string1", Int: 1, Inner: innerTestStruct{Float: 1}})
+		ts := reflect.ValueOf(testStruct{ID: s.NewID(), String: "string1", Int: 1, Inner: innerTestStruct{Float: 1}})
 		s.mustTrue(Cond{"String", EQ, "string1"}.matches(ts))
 		s.mustFalse(Cond{"String", NE, "string1"}.matches(ts))
 		s.mustTrue(Or{Cond{"String", NE, "string1"}, Cond{"String", EQ, "string1"}}.matches(ts))

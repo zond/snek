@@ -327,10 +327,9 @@ func (c Cond) Matches(structPointer any) (bool, error) {
 }
 
 func (c Cond) matches(val reflect.Value) (bool, error) {
-	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
-		return false, fmt.Errorf("only pointers to structs allowed, not %v", val.Interface())
+	if val.Kind() != reflect.Struct {
+		return false, fmt.Errorf("only structs allowed, not %v", val.Interface())
 	}
-	val = val.Elem()
 	return c.Comparator.apply(val.FieldByName(c.Field), reflect.ValueOf(c.Value))
 }
 

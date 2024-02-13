@@ -129,7 +129,7 @@ func (u *Update) addSubscriptionsForCurrent(info *valueInfo) error {
 	if err := u.get(existingVal.Interface(), info); err != nil {
 		return err
 	}
-	u.subscriptions.merge(u.snek.getSubscriptionsFor(existingVal))
+	u.subscriptions.merge(u.snek.getSubscriptionsFor(existingVal.Elem()))
 	return nil
 }
 
