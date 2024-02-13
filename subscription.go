@@ -15,6 +15,7 @@ type typedSubscription[T any] struct {
 	query      Query
 	snek       *Snek
 	subscriber Subscriber[T]
+	caller     Caller
 }
 
 func (s *typedSubscription[T]) getID() ID {
@@ -36,7 +37,7 @@ func (s *typedSubscription[T]) matches(val reflect.Value) bool {
 
 func (s *typedSubscription[T]) push() {
 	results := []T{}
-	subscriberErr := s.snek.View(func(v *View) error {
+	subscriberErr := s.snek.View(s.caller, func(v *View) error {
 		return v.Select(&results, s.query)
 	})
 	pushErr := s.subscriber(results, subscriberErr)
@@ -50,13 +51,14 @@ func (s *typedSubscription[T]) push() {
 // the query, and asynchronously sends the current content and the
 // content post any update of the store to the subscriber.
 // Once the subscriber returns an error it will be cleaned up and removed.
-func Subscribe[T any](s *Snek, query Query, subscriber Subscriber[T]) error {
+func Subscribe[T any](s *Snek, caller Caller, query Query, subscriber Subscriber[T]) error {
 	sub := &typedSubscription[T]{
 		typ:        reflect.TypeOf(*new(T)),
 		id:         s.NewID(),
 		snek:       s,
 		query:      query,
 		subscriber: subscriber,
+		caller:     caller,
 	}
 	subs := s.getSubscriptions(sub.typ)
 	if _, found := subs.Set(string(sub.id), sub); found {

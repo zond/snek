@@ -13,8 +13,22 @@ import (
 
 // View represents a read-only transaction.
 type View struct {
-	tx   *sqlx.Tx
-	snek *Snek
+	tx     *sqlx.Tx
+	snek   *Snek
+	caller Caller
+}
+
+// Caller returns the caller of this view.
+func (v *View) Caller() Caller {
+	return v.caller
+}
+
+func (v *View) queryControl(typ reflect.Type, set Set) error {
+	perms, found := v.snek.permissions[typ.Name()]
+	if !found || perms.queryControl == nil {
+		return fmt.Errorf("%s not registered with query control", typ.Name())
+	}
+	return perms.queryControl(v, set)
 }
 
 // Update represents a read/write transaction.
@@ -23,8 +37,23 @@ type Update struct {
 	subscriptions subscriptionSet
 }
 
+func (u *Update) updateControl(typ reflect.Type, prev, next any) error {
+	perms, found := u.snek.permissions[typ.Name()]
+	if !found || perms.updateControl == nil {
+		return fmt.Errorf("%s not registered with update control", typ.Name())
+	}
+	return perms.updateControl(u, prev, next)
+}
+
+// Caller identifies the caller of a function.
+type Caller interface {
+	UserID() ID
+	IsAdmin() bool
+	IsSystem() bool
+}
+
 // View executs f in the context of a read-only transaction.
-func (s *Snek) View(f func(*View) error) error {
+func (s *Snek) View(caller Caller, f func(*View) error) error {
 	tx, err := s.db.BeginTxx(s.ctx, &sql.TxOptions{
 		Isolation: sql.LevelSerializable,
 		ReadOnly:  true,
@@ -34,8 +63,9 @@ func (s *Snek) View(f func(*View) error) error {
 	}
 	defer tx.Rollback()
 	return f(&View{
-		tx:   tx,
-		snek: s,
+		tx:     tx,
+		snek:   s,
+		caller: caller,
 	})
 }
 
@@ -54,6 +84,10 @@ func (v *View) Select(structSlicePointer any, query Query) error {
 	typ := reflect.TypeOf(structSlicePointer)
 	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Slice || typ.Elem().Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("only pointers to slices of structs allowed, not %v", structSlicePointer)
+	}
+	structType := typ.Elem().Elem()
+	if err := v.queryControl(structType, query.Set); err != nil {
+		return err
 	}
 	condition, params := query.Set.toWhereCondition()
 	buf := &bytes.Buffer{}
@@ -92,11 +126,14 @@ func (v *View) Get(structPointer any) error {
 	if err != nil {
 		return err
 	}
+	if err := v.queryControl(info.typ, Cond{"ID", EQ, info.id}); err != nil {
+		return err
+	}
 	return v.get(structPointer, info)
 }
 
 // Update executs f in the context of a read/write transaction.
-func (s *Snek) Update(f func(*Update) error) error {
+func (s *Snek) Update(caller Caller, f func(*Update) error) error {
 	tx, err := s.db.BeginTxx(s.ctx, &sql.TxOptions{
 		Isolation: sql.LevelSerializable,
 		ReadOnly:  false,
@@ -107,8 +144,9 @@ func (s *Snek) Update(f func(*Update) error) error {
 	subscriptions := subscriptionSet{}
 	if err := f(&Update{
 		View: View{
-			tx:   tx,
-			snek: s,
+			tx:     tx,
+			snek:   s,
+			caller: caller,
 		},
 		subscriptions: subscriptions,
 	}); err != nil {
@@ -124,13 +162,13 @@ func (s *Snek) Update(f func(*Update) error) error {
 	return nil
 }
 
-func (u *Update) addSubscriptionsForCurrent(info *valueInfo) error {
+func (u *Update) loadAndAddSubscriptionsForCurrent(info *valueInfo) (any, error) {
 	existingVal := reflect.New(info.typ)
 	if err := u.get(existingVal.Interface(), info); err != nil {
-		return err
+		return nil, err
 	}
 	u.subscriptions.merge(u.snek.getSubscriptionsFor(existingVal.Elem()))
-	return nil
+	return existingVal.Elem().Interface(), nil
 }
 
 // Remove removes the data at structPointer.ID.
@@ -140,7 +178,12 @@ func (u *Update) Remove(structPointer any) error {
 		return err
 	}
 
-	if err := u.addSubscriptionsForCurrent(info); err != nil {
+	current, err := u.loadAndAddSubscriptionsForCurrent(info)
+	if err != nil {
+		return err
+	}
+
+	if err := u.updateControl(info.typ, current, nil); err != nil {
 		return err
 	}
 
@@ -158,7 +201,12 @@ func (u *Update) Update(structPointer any) error {
 		return err
 	}
 
-	if err := u.addSubscriptionsForCurrent(info); err != nil {
+	current, err := u.loadAndAddSubscriptionsForCurrent(info)
+	if err != nil {
+		return err
+	}
+
+	if err := u.updateControl(info.typ, current, structPointer); err != nil {
 		return err
 	}
 
@@ -174,6 +222,10 @@ func (u *Update) Update(structPointer any) error {
 func (u *Update) Insert(structPointer any) error {
 	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
+		return err
+	}
+
+	if err := u.updateControl(info.typ, nil, structPointer); err != nil {
 		return err
 	}
 

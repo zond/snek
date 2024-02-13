@@ -40,5 +40,6 @@ func (o Options) Open() (*Snek, error) {
 		options:       o,
 		rng:           rand.New(rand.NewSource(o.RandomSeed)),
 		subscriptions: synch.NewSMap[string, *synch.SMap[string, subscription]](),
+		permissions:   map[string]permissions{},
 	}, nil
 }
