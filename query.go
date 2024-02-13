@@ -17,6 +17,7 @@ type Set interface {
 	Includes(otherSet Set) (bool, error)
 }
 
+// All matches everything.
 type All struct{}
 
 func (a All) toWhereCondition() (string, []any) {
@@ -39,14 +40,21 @@ func (a All) Matches(structPointer any) (bool, error) {
 	return true, nil
 }
 
+// Comparator compares two values.
 type Comparator int
 
 const (
+	// ==
 	EQ Comparator = iota
+	// !=
 	NE
+	// >
 	GT
+	// >=
 	GE
+	// <
 	LT
+	// <=
 	LE
 )
 
@@ -267,6 +275,7 @@ func implications(a, b Comparator) (isTrue, isFalse comparison, err error) {
 	}
 }
 
+// Cond defines a Set of all structs whose Field [Comparator] Value evaluates to true.
 type Cond struct {
 	Field      string
 	Comparator Comparator
@@ -329,6 +338,7 @@ func (c Cond) toWhereCondition() (string, []any) {
 	return fmt.Sprintf("\"%s\" %s ?", c.Field, c.Comparator.String()), []any{c.Value}
 }
 
+// And defines a Set of all structs present in all contained Sets.
 type And []Set
 
 func (a And) toWhereCondition() (string, []any) {
@@ -391,6 +401,7 @@ func (a And) matches(val reflect.Value) (bool, error) {
 	return acc, nil
 }
 
+// Or defines a Set of all structs contained in any contained Set.
 type Or []Set
 
 func (o Or) toWhereCondition() (string, []any) {
@@ -453,11 +464,13 @@ func (o Or) matches(val reflect.Value) (bool, error) {
 	return acc, nil
 }
 
+// Order defines an order for the structs returned by a query.
 type Order struct {
 	Field string
 	Desc  bool
 }
 
+// Query defines a Set of structs to be returned in a particular amount in a particular order.
 type Query struct {
 	Set   Set
 	Limit uint

@@ -9,6 +9,7 @@ import (
 	"github.com/zond/snek/synch"
 )
 
+// Options defines the options to use when opening a store.
 type Options struct {
 	Path       string
 	RandomSeed int64
@@ -17,12 +18,14 @@ type Options struct {
 	LogQuery   bool
 }
 
+// DefaultOptions returns default options with the provided path as file storage.
 func DefaultOptions(path string) Options {
 	return Options{
 		Path: path,
 	}
 }
 
+// Open returns a store using the provided options.
 func (o Options) Open() (*Snek, error) {
 	db, err := sqlx.Open("sqlite3", o.Path)
 	if err != nil {
