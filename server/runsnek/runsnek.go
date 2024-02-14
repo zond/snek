@@ -14,17 +14,13 @@ type Message struct {
 }
 
 func main() {
-	snekOpts := snek.DefaultOptions("snek.db")
-	s, err := snekOpts.Open()
+	opts := server.DefaultOptions("0.0.0.0:8080", "snek.db", server.AnonymousIdentifier{})
+	s, err := opts.Open()
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := snek.Register(s, &Message{}, snek.UncontrolledQueries, snek.UncontrolledUpdates(&Message{})); err != nil {
-		log.Fatal(err)
-	}
-	serverOpts := server.DefaultOptions("0.0.0.0:8080", s, server.AnonymousIdentifier{})
-	log.Printf("Opened %q, will listen to %q", snekOpts.Path, serverOpts.Addr)
-	if err := serverOpts.Run(); err != nil {
+	log.Printf("Opened %q, will listen to %q", opts.Path, opts.Addr)
+	if err := s.Run(); err != nil {
 		log.Fatal(err)
 	}
 }

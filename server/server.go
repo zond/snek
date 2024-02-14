@@ -13,6 +13,7 @@ import (
 	"github.com/zond/snek/synch"
 )
 
+// Match represents a serializable snek.Set.
 type Match struct {
 	And  []Match
 	Or   []Match
@@ -63,7 +64,7 @@ func (m *Match) toSet() (snek.Set, error) {
 	}
 }
 
-// Sent from client to server.
+// Sent from client to server. Represents a serializable snek.Query for a given type.
 type Subscription struct {
 	TypeName string
 	Order    []snek.Order `json:",omitempy"`
@@ -105,9 +106,9 @@ type Message struct {
 	Identity     *Identity     `json:",omitempty"`
 }
 
-func (s *server) response(m *Message, err error) *Message {
+func (c *client) response(m *Message, err error) *Message {
 	errMessage := &Message{
-		ID:     s.snek.NewID(),
+		ID:     c.server.snek.NewID(),
 		Result: &Result{},
 	}
 	if m != nil {
@@ -143,34 +144,33 @@ func (m *Message) validate() error {
 	return nil
 }
 
-type server struct {
-	snek   *snek.Snek
+type client struct {
+	server *Server
 	conn   *websocket.Conn
-	opts   Options
 	lock   synch.Lock
 	caller *synch.S[snek.Caller]
 	closed int32
 }
 
-func (s *server) readLoop() {
-	atomic.StoreInt32(&s.closed, 0)
-	for atomic.LoadInt32(&s.closed) == 0 {
-		if _, b, err := s.conn.ReadMessage(); err != nil {
+func (c *client) readLoop() {
+	atomic.StoreInt32(&c.closed, 0)
+	for atomic.LoadInt32(&c.closed) == 0 {
+		if _, b, err := c.conn.ReadMessage(); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("unexpected close: %v", err)
 			} else {
 				log.Printf("connection closed: %v", err)
 			}
-			atomic.StoreInt32(&s.closed, 1)
+			atomic.StoreInt32(&c.closed, 1)
 		} else {
 			go func() {
 				message := &Message{}
 				if err := json.Unmarshal(b, message); err != nil {
-					s.send(s.response(nil, err))
+					c.send(c.response(nil, err))
 					return
 				}
 				if err := message.validate(); err != nil {
-					s.send(s.response(message, err))
+					c.send(c.response(message, err))
 					return
 				}
 				log.Printf("received message %+v", message)
@@ -181,51 +181,51 @@ func (s *server) readLoop() {
 				case message.Update != nil:
 					log.Printf("received update %+v", message.Update)
 				case message.Identity != nil:
-					caller, err := s.opts.Identifier.Identify(message.Identity)
+					caller, err := c.server.opts.Identifier.Identify(message.Identity)
 					if err != nil {
-						s.send(s.response(message, err))
+						c.send(c.response(message, err))
 						return
 					}
 					log.Printf("caller identified as %+v", caller)
-					s.caller.Set(caller)
-					s.send(s.response(message, nil))
+					c.caller.Set(caller)
+					c.send(c.response(message, nil))
 				}
 			}()
 		}
 	}
-	s.conn.Close()
+	c.conn.Close()
 }
 
-func (s *server) send(m *Message) error {
+func (c *client) send(m *Message) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	err = s.lock.Sync(func() error {
-		s.conn.SetWriteDeadline(time.Now().Add(s.opts.WriteWait))
-		return s.conn.WriteMessage(websocket.TextMessage, b)
+	err = c.lock.Sync(func() error {
+		c.conn.SetWriteDeadline(time.Now().Add(c.server.opts.WriteWait))
+		return c.conn.WriteMessage(websocket.TextMessage, b)
 	})
 	if err != nil {
 		log.Printf("while sending %+v: %v", m, err)
-		atomic.StoreInt32(&s.closed, 1)
+		atomic.StoreInt32(&c.closed, 1)
 	}
 	return err
 }
 
-func (s *server) pingLoop() {
-	s.conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
-	s.conn.SetPongHandler(func(string) error {
-		s.conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
+func (c *client) pingLoop() {
+	c.conn.SetReadDeadline(time.Now().Add(c.server.opts.PongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(c.server.opts.PongWait))
 		return nil
 	})
-	for atomic.LoadInt32(&s.closed) == 0 {
-		time.Sleep(s.opts.PingPeriod)
-		s.conn.SetWriteDeadline(time.Now().Add(s.opts.WriteWait))
-		if err := s.lock.Sync(func() error {
-			return s.conn.WriteMessage(websocket.PingMessage, []byte{})
+	for atomic.LoadInt32(&c.closed) == 0 {
+		time.Sleep(c.server.opts.PingPeriod)
+		c.conn.SetWriteDeadline(time.Now().Add(c.server.opts.WriteWait))
+		if err := c.lock.Sync(func() error {
+			return c.conn.WriteMessage(websocket.PingMessage, []byte{})
 		}); err != nil {
 			log.Printf("while sending ping to client: %v", err)
-			atomic.StoreInt32(&s.closed, 1)
+			atomic.StoreInt32(&c.closed, 1)
 		}
 	}
 }
@@ -244,17 +244,21 @@ func (a anonymousCaller) IsSystem() bool {
 	return false
 }
 
+// An Identifier that always identifies as anonymous callers.
 type AnonymousIdentifier struct{}
 
 func (a AnonymousIdentifier) Identify(*Identity) (snek.Caller, error) {
 	return anonymousCaller{}, nil
 }
 
+// Identifier allows verifying identities into callers.
 type Identifier interface {
 	Identify(*Identity) (snek.Caller, error)
 }
 
+// Options contains server configuration.
 type Options struct {
+	Path       string
 	Addr       string
 	Snek       *snek.Snek
 	WriteWait  time.Duration
@@ -263,10 +267,11 @@ type Options struct {
 	Identifier Identifier
 }
 
-func DefaultOptions(addr string, snek *snek.Snek, identifier Identifier) Options {
+// DefaultOptions returns default options for the given interface address, database path, and identifier.
+func DefaultOptions(addr string, path string, identifier Identifier) Options {
 	return Options{
 		Addr:       addr,
-		Snek:       snek,
+		Path:       path,
 		WriteWait:  10 * time.Second,
 		PongWait:   60 * time.Second,
 		PingPeriod: 50 * time.Second,
@@ -274,7 +279,31 @@ func DefaultOptions(addr string, snek *snek.Snek, identifier Identifier) Options
 	}
 }
 
-func (o Options) Run() error {
+// Server serves websockets to a snek database.
+type Server struct {
+	snek *snek.Snek
+	opts Options
+}
+
+// Open returns a server using the provided options.
+func (o Options) Open() (*Server, error) {
+	s, err := snek.DefaultOptions(o.Path).Open()
+	if err != nil {
+		return nil, err
+	}
+	return &Server{
+		opts: o,
+		snek: s,
+	}, nil
+}
+
+// Register registers the type of the example structPointer in the server and store and ensures there is a table for the type.
+func Register[T any](s *Server, structPointer *T, queryControl snek.QueryControl, updateControl snek.UpdateControl[T]) error {
+	return snek.Register(s.snek, structPointer, queryControl, updateControl)
+}
+
+// Run starts the server.
+func (s *Server) Run() error {
 	upgrader := websocket.Upgrader{
 		EnableCompression: true,
 	}
@@ -285,18 +314,17 @@ func (o Options) Run() error {
 			log.Printf("while upgrading %+v, %+v: %v", w, r, err)
 			return
 		}
-		s := &server{
+		c := &client{
 			conn:   conn,
-			snek:   o.Snek,
-			opts:   o,
+			server: s,
 			caller: synch.New[snek.Caller](nil),
 		}
-		go s.pingLoop()
-		go s.readLoop()
+		go c.pingLoop()
+		go c.readLoop()
 		log.Printf("%v connected", conn.RemoteAddr())
 	})
 	httpServer := &http.Server{
-		Addr:    o.Addr,
+		Addr:    s.opts.Addr,
 		Handler: mux,
 	}
 	return httpServer.ListenAndServe()
