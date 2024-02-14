@@ -5,21 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/zond/snek"
-)
-
-type MessageType string
-
-const (
-	SubscribeType MessageType = "Subscribe"
-	DataType      MessageType = "Data"
-	InsertType    MessageType = "Insert"
-	UpdateType    MessageType = "Update"
-	RemoveType    MessageType = "Remove"
-	ResultType    MessageType = "Result"
+	"github.com/zond/snek/synch"
 )
 
 type Match struct {
@@ -28,11 +19,7 @@ type Match struct {
 	Cond *snek.Cond
 }
 
-func (m *Match) validationErr() error {
-	return fmt.Errorf("exactly one of Match.And, Match.Or, or Match.Cond must be populated, not %+v", m)
-}
-
-func (m *Match) toSet() (snek.Set, error) {
+func (m *Match) validate() error {
 	nonNilFields := 0
 	if len(m.And) > 0 {
 		nonNilFields++
@@ -43,8 +30,15 @@ func (m *Match) toSet() (snek.Set, error) {
 	if m.Cond != nil {
 		nonNilFields++
 	}
-	if nonNilFields > 1 {
-		return nil, m.validationErr()
+	if nonNilFields != 1 {
+		return fmt.Errorf("exactly one of Match.And, Match.Or, or Match.Cond must be populated, not %+v", m)
+	}
+	return nil
+}
+
+func (m *Match) toSet() (snek.Set, error) {
+	if err := m.validate(); err != nil {
+		return nil, err
 	}
 	makeSubSet := func(subMatches []Match) ([]snek.Set, error) {
 		result := []snek.Set{}
@@ -64,19 +58,17 @@ func (m *Match) toSet() (snek.Set, error) {
 	case len(m.Or) > 0:
 		subSet, err := makeSubSet(m.And)
 		return snek.Or(subSet), err
-	case m.Cond != nil:
-		return *m.Cond, nil
 	default:
-		return nil, m.validationErr()
+		return *m.Cond, nil
 	}
 }
 
 // Sent from client to server.
 type Subscription struct {
 	TypeName string
-	Order    []snek.Order
-	Limit    int
-	Match    Match
+	Order    []snek.Order `json:",omitempy"`
+	Limit    int          `json:",omitempty"`
+	Match    Match        `json:",omitempty"`
 }
 
 // Sent by server after initial Subscription and every time the data matching set of data is modified.
@@ -99,70 +91,120 @@ type Result struct {
 
 // Sent in both directions.
 type Message struct {
-	MessageID    ID
-	Type         MessageType
+	ID           snek.ID
 	Subscription *Subscription
 	Data         *Data
 	Update       *Update
 	Result       *Result
 }
 
-type server struct {
-	snek *snek.Snek
-	conn *websocket.Conn
-	opts Options
-	out  chan Message
+func (s *server) errResponse(m *Message, err error) *Message {
+	errString := err.Error()
+	errMessage := &Message{
+		ID: s.snek.NewID(),
+		Result: &Result{
+			Error: &errString,
+		},
+	}
+	if m != nil {
+		errMessage.Result.CauseMessageID = s.snek.NewID()
+	}
+	return errMessage
 }
 
-func (s *server) readPump() {
-	defer s.conn.Close()
+func (m *Message) validate() error {
+	nonNilFields := 0
+	if m.Subscription != nil {
+		nonNilFields++
+	}
+	if m.Data != nil {
+		nonNilFields++
+	}
+	if m.Update != nil {
+		nonNilFields++
+	}
+	if m.Result != nil {
+		nonNilFields++
+	}
+	if nonNilFields != 1 {
+		return fmt.Errorf("exactly one of Message.Subscription, Message.Data, Message.Update, and Message.Result must be populated, not %+v", m)
+	}
+	return nil
+}
+
+type server struct {
+	snek   *snek.Snek
+	conn   *websocket.Conn
+	opts   Options
+	lock   synch.Lock
+	closed int32
+}
+
+func (s *server) readLoop() {
+	atomic.StoreInt32(&s.closed, 0)
+	for atomic.LoadInt32(&s.closed) == 0 {
+		if _, b, err := s.conn.ReadMessage(); err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("unexpected close: %v", err)
+			} else {
+				log.Printf("connection closed: %v", err)
+			}
+			atomic.StoreInt32(&s.closed, 1)
+		} else {
+			go func() {
+				message := &Message{}
+				if err := json.Unmarshal(b, message); err != nil {
+					s.send(s.errResponse(nil, err))
+					return
+				}
+				if err := message.validate(); err != nil {
+					s.send(s.errResponse(message, err))
+					return
+				}
+				log.Printf("received message %+v", message)
+
+				switch {
+				case message.Subscription != nil:
+					log.Printf("received subscription %+v", message.Subscription)
+				case message.Update != nil:
+					log.Printf("received update %+v", message.Update)
+				}
+			}()
+		}
+	}
+	s.conn.Close()
+}
+
+func (s *server) send(m *Message) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	err = s.lock.Sync(func() error {
+		s.conn.SetWriteDeadline(time.Now().Add(s.opts.WriteWait))
+		return s.conn.WriteMessage(websocket.TextMessage, b)
+	})
+	if err != nil {
+		log.Printf("while sending %+v: %v", m, err)
+		atomic.StoreInt32(&s.closed, 1)
+	}
+	return err
+}
+
+func (s *server) pingLoop() {
 	s.conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	s.conn.SetPongHandler(func(string) error {
 		s.conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 		return nil
 	})
-	for {
-		_, message, err := s.conn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("unexpected close: %v", err)
-			}
-			break
-		}
-		fmt.Println("received", message)
-	}
-}
-
-func (s *server) writePump() {
-	ticker := time.NewTicker(s.opts.PingPeriod)
-	defer func() {
-		ticker.Stop()
-		s.conn.Close()
-	}()
-	for {
-		select {
-		case message, ok := <-s.out:
-			s.conn.SetWriteDeadline(time.Now().Add(s.opts.WriteWait))
-			if !ok {
-				s.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			b, err := json.Marshal(message)
-			if err != nil {
-				log.Printf("while marshalling %+v: %v", message, err)
-				s.conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-			if err := s.conn.WriteMessage(websocket.BinaryMessage, b); err != nil {
-				log.Printf("while sending %+v: %v", message, err)
-				return
-			}
-		case <-ticker.C:
-			s.conn.SetWriteDeadline(time.Now().Add(s.opts.WriteWait))
-			if err := s.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
-				return
-			}
+	for atomic.LoadInt32(&s.closed) == 0 {
+		time.Sleep(s.opts.PingPeriod)
+		s.conn.SetWriteDeadline(time.Now().Add(s.opts.WriteWait))
+		if err := s.lock.Sync(func() error {
+			return s.conn.WriteMessage(websocket.PingMessage, []byte{})
+		}); err != nil {
+			log.Printf("while sending ping to client: %v", err)
+			atomic.StoreInt32(&s.closed, 1)
 		}
 	}
 }
@@ -200,10 +242,10 @@ func (o Options) Run() error {
 			conn: conn,
 			snek: o.Snek,
 			opts: o,
-			out:  make(chan Message),
 		}
-		go s.readPump()
-		go s.writePump()
+		go s.pingLoop()
+		go s.readLoop()
+		log.Printf("%v connected", conn.RemoteAddr())
 	})
 	httpServer := &http.Server{
 		Addr:    o.Addr,

@@ -47,6 +47,18 @@ func (s *S[V]) Write(f func(v V)) {
 	f(s.v)
 }
 
+// Lock is a simple mutex that only provides a synchronizer.
+type Lock S[struct{}]
+
+// Sync executes f synchronized.
+func (l *Lock) Sync(f func() error) error {
+	var err error
+	(*S[struct{}])(l).Write(func(_ struct{}) {
+		err = f()
+	})
+	return err
+}
+
 // SMap is a synchronized wrapper around a map.
 type SMap[K comparable, V any] S[map[K]V]
 
