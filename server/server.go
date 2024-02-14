@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -81,7 +82,59 @@ type Data struct {
 // Sent from client to server.
 type Update struct {
 	TypeName string
-	Blob     []byte
+	Insert   []byte
+	Update   []byte
+	Remove   []byte
+}
+
+type updateOp string
+
+const (
+	insert updateOp = "insert"
+	update updateOp = "update"
+	remove updateOp = "remove"
+)
+
+func (u *Update) execute(c *client) error {
+	var op updateOp
+	var b []byte
+	nonNilFields := 0
+	if len(u.Insert) > 0 {
+		op = insert
+		b = u.Insert
+		nonNilFields++
+	}
+	if len(u.Update) > 0 {
+		op = update
+		b = u.Update
+		nonNilFields++
+	}
+	if len(u.Remove) > 0 {
+		op = remove
+		b = u.Remove
+		nonNilFields++
+	}
+	if nonNilFields != 1 {
+		return fmt.Errorf("exactly one of the nullable fields of Update must be populated, not %+v", u)
+	}
+	typ, found := c.server.types[u.TypeName]
+	if !found {
+		return fmt.Errorf("%q not registered", u.TypeName)
+	}
+	instance := reflect.New(typ).Interface()
+	if err := json.Unmarshal(b, instance); err != nil {
+		return err
+	}
+	return c.server.snek.Update(c.caller.Get(), func(u *snek.Update) error {
+		switch op {
+		case insert:
+			return u.Insert(instance)
+		case update:
+			return u.Insert(instance)
+		default:
+			return u.Insert(instance)
+		}
+	})
 }
 
 // Sent from server as response to Update and Subscription.
@@ -179,16 +232,16 @@ func (c *client) readLoop() {
 				case message.Subscription != nil:
 					log.Printf("received subscription %+v", message.Subscription)
 				case message.Update != nil:
-					log.Printf("received update %+v", message.Update)
+					c.send(c.response(message, message.Update.execute(c)))
 				case message.Identity != nil:
 					caller, err := c.server.opts.Identifier.Identify(message.Identity)
 					if err != nil {
 						c.send(c.response(message, err))
-						return
+					} else {
+						log.Printf("caller identified as %+v", caller)
+						c.caller.Set(caller)
+						c.send(c.response(message, nil))
 					}
-					log.Printf("caller identified as %+v", caller)
-					c.caller.Set(caller)
-					c.send(c.response(message, nil))
 				}
 			}()
 		}
@@ -281,8 +334,9 @@ func DefaultOptions(addr string, path string, identifier Identifier) Options {
 
 // Server serves websockets to a snek database.
 type Server struct {
-	snek *snek.Snek
-	opts Options
+	snek  *snek.Snek
+	opts  Options
+	types map[string]reflect.Type
 }
 
 // Open returns a server using the provided options.
@@ -292,14 +346,21 @@ func (o Options) Open() (*Server, error) {
 		return nil, err
 	}
 	return &Server{
-		opts: o,
-		snek: s,
+		opts:  o,
+		snek:  s,
+		types: map[string]reflect.Type{},
 	}, nil
 }
 
 // Register registers the type of the example structPointer in the server and store and ensures there is a table for the type.
 func Register[T any](s *Server, structPointer *T, queryControl snek.QueryControl, updateControl snek.UpdateControl[T]) error {
-	return snek.Register(s.snek, structPointer, queryControl, updateControl)
+	err := snek.Register(s.snek, structPointer, queryControl, updateControl)
+	if err != nil {
+		return err
+	}
+	structType := reflect.TypeOf(structPointer).Elem()
+	s.types[structType.Name()] = structType
+	return nil
 }
 
 // Run starts the server.

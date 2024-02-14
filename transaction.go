@@ -33,7 +33,7 @@ func (v *View) queryControl(typ reflect.Type, set Set) error {
 
 // Update represents a read/write transaction.
 type Update struct {
-	View
+	*View
 	subscriptions subscriptionSet
 }
 
@@ -143,7 +143,7 @@ func (s *Snek) Update(caller Caller, f func(*Update) error) error {
 	}
 	subscriptions := subscriptionSet{}
 	if err := f(&Update{
-		View: View{
+		View: &View{
 			tx:     tx,
 			snek:   s,
 			caller: caller,

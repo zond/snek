@@ -1,6 +1,7 @@
 package snek
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"math/rand"
@@ -19,6 +20,11 @@ type ID []byte
 
 func (i ID) String() string {
 	return hex.EncodeToString(i)
+}
+
+// Equal returns if this ID is equal to another ID.
+func (i ID) Equal(other ID) bool {
+	return bytes.Compare(i, other) == 0
 }
 
 var (
