@@ -31,7 +31,7 @@ func (m *Match) validate() error {
 		nonNilFields++
 	}
 	if nonNilFields != 1 {
-		return fmt.Errorf("exactly one of Match.And, Match.Or, or Match.Cond must be populated, not %+v", m)
+		return fmt.Errorf("exactly one of the nullable fields of Match must be populated, not %+v", m)
 	}
 	return nil
 }
@@ -89,25 +89,33 @@ type Result struct {
 	Error          *string
 }
 
+// Sent from client to server to attain a caller identity.
+type Identity struct {
+	Provider string
+	Token    string
+}
+
 // Sent in both directions.
 type Message struct {
 	ID           snek.ID
-	Subscription *Subscription
-	Data         *Data
-	Update       *Update
-	Result       *Result
+	Subscription *Subscription `json:",omitempty"`
+	Data         *Data         `json:",omitempty"`
+	Update       *Update       `json:",omitempty"`
+	Result       *Result       `json:",omitempty"`
+	Identity     *Identity     `json:",omitempty"`
 }
 
-func (s *server) errResponse(m *Message, err error) *Message {
-	errString := err.Error()
+func (s *server) response(m *Message, err error) *Message {
 	errMessage := &Message{
-		ID: s.snek.NewID(),
-		Result: &Result{
-			Error: &errString,
-		},
+		ID:     s.snek.NewID(),
+		Result: &Result{},
 	}
 	if m != nil {
-		errMessage.Result.CauseMessageID = s.snek.NewID()
+		errMessage.Result.CauseMessageID = m.ID
+	}
+	if err != nil {
+		errString := err.Error()
+		errMessage.Result.Error = &errString
 	}
 	return errMessage
 }
@@ -126,8 +134,11 @@ func (m *Message) validate() error {
 	if m.Result != nil {
 		nonNilFields++
 	}
+	if m.Identity != nil {
+		nonNilFields++
+	}
 	if nonNilFields != 1 {
-		return fmt.Errorf("exactly one of Message.Subscription, Message.Data, Message.Update, and Message.Result must be populated, not %+v", m)
+		return fmt.Errorf("exactly one of the nullable fields of Message must be populated, not %+v", m)
 	}
 	return nil
 }
@@ -137,6 +148,7 @@ type server struct {
 	conn   *websocket.Conn
 	opts   Options
 	lock   synch.Lock
+	caller *synch.S[snek.Caller]
 	closed int32
 }
 
@@ -154,11 +166,11 @@ func (s *server) readLoop() {
 			go func() {
 				message := &Message{}
 				if err := json.Unmarshal(b, message); err != nil {
-					s.send(s.errResponse(nil, err))
+					s.send(s.response(nil, err))
 					return
 				}
 				if err := message.validate(); err != nil {
-					s.send(s.errResponse(message, err))
+					s.send(s.response(message, err))
 					return
 				}
 				log.Printf("received message %+v", message)
@@ -168,6 +180,15 @@ func (s *server) readLoop() {
 					log.Printf("received subscription %+v", message.Subscription)
 				case message.Update != nil:
 					log.Printf("received update %+v", message.Update)
+				case message.Identity != nil:
+					caller, err := s.opts.Identifier.Identify(message.Identity)
+					if err != nil {
+						s.send(s.response(message, err))
+						return
+					}
+					log.Printf("caller identified as %+v", caller)
+					s.caller.Set(caller)
+					s.send(s.response(message, nil))
 				}
 			}()
 		}
@@ -209,21 +230,47 @@ func (s *server) pingLoop() {
 	}
 }
 
+type anonymousCaller struct{}
+
+func (a anonymousCaller) UserID() snek.ID {
+	return nil
+}
+
+func (a anonymousCaller) IsAdmin() bool {
+	return false
+}
+
+func (a anonymousCaller) IsSystem() bool {
+	return false
+}
+
+type AnonymousIdentifier struct{}
+
+func (a AnonymousIdentifier) Identify(*Identity) (snek.Caller, error) {
+	return anonymousCaller{}, nil
+}
+
+type Identifier interface {
+	Identify(*Identity) (snek.Caller, error)
+}
+
 type Options struct {
 	Addr       string
 	Snek       *snek.Snek
 	WriteWait  time.Duration
 	PongWait   time.Duration
 	PingPeriod time.Duration
+	Identifier Identifier
 }
 
-func DefaultOptions(addr string, snek *snek.Snek) Options {
+func DefaultOptions(addr string, snek *snek.Snek, identifier Identifier) Options {
 	return Options{
 		Addr:       addr,
 		Snek:       snek,
 		WriteWait:  10 * time.Second,
 		PongWait:   60 * time.Second,
 		PingPeriod: 50 * time.Second,
+		Identifier: identifier,
 	}
 }
 
@@ -239,9 +286,10 @@ func (o Options) Run() error {
 			return
 		}
 		s := &server{
-			conn: conn,
-			snek: o.Snek,
-			opts: o,
+			conn:   conn,
+			snek:   o.Snek,
+			opts:   o,
+			caller: synch.New[snek.Caller](nil),
 		}
 		go s.pingLoop()
 		go s.readLoop()
