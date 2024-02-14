@@ -41,22 +41,20 @@ func (a All) Matches(structPointer any) (bool, error) {
 }
 
 // Comparator compares two values.
-type Comparator int
+type Comparator string
 
 const (
-	// ==
-	EQ Comparator = iota
-	// !=
-	NE
-	// >
-	GT
-	// >=
-	GE
-	// <
-	LT
-	// <=
-	LE
+	EQ Comparator = "="
+	NE Comparator = "!="
+	GT Comparator = ">"
+	GE Comparator = ">="
+	LT Comparator = "<"
+	LE Comparator = "<="
 )
+
+func (c Comparator) unrecognizedErr() error {
+	return fmt.Errorf("unrecognized comparator %v", c)
+}
 
 func comparePrimitives[T ~int | ~int64 | ~uint64 | ~string | ~float64](c Comparator, a, b T) (bool, error) {
 	switch c {
@@ -73,7 +71,7 @@ func comparePrimitives[T ~int | ~int64 | ~uint64 | ~string | ~float64](c Compara
 	case LE:
 		return a <= b, nil
 	default:
-		return false, fmt.Errorf("unrecognized comparator %v", int(c))
+		return false, c.unrecognizedErr()
 	}
 }
 
@@ -122,25 +120,6 @@ func (c Comparator) apply(a, b reflect.Value) (bool, error) {
 	}
 }
 
-func (c Comparator) String() string {
-	switch c {
-	case EQ:
-		return "="
-	case NE:
-		return "!="
-	case GT:
-		return ">"
-	case GE:
-		return ">="
-	case LT:
-		return "<"
-	case LE:
-		return "<="
-	default:
-		return fmt.Sprintf("unrecognized comparator %v", int(c))
-	}
-}
-
 type comparison func(reflect.Value, reflect.Value) (bool, error)
 
 func noImplication(a, b reflect.Value) (bool, error) {
@@ -165,7 +144,7 @@ func incInt(aDelta, bDelta uint, f comparison) comparison {
 
 func implications(a, b Comparator) (isTrue, isFalse comparison, err error) {
 	unrecognizedComparator := func(c Comparator) (comparison, comparison, error) {
-		return nil, nil, fmt.Errorf("unrecognized comparator %v", int(c))
+		return nil, nil, c.unrecognizedErr()
 	}
 	switch a {
 	case EQ:
@@ -334,7 +313,7 @@ func (c Cond) matches(val reflect.Value) (bool, error) {
 }
 
 func (c Cond) toWhereCondition() (string, []any) {
-	return fmt.Sprintf("\"%s\" %s ?", c.Field, c.Comparator.String()), []any{c.Value}
+	return fmt.Sprintf("\"%s\" %s ?", c.Field, c.Comparator), []any{c.Value}
 }
 
 // And defines a Set of all structs present in all contained Sets.
