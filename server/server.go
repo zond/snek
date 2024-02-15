@@ -145,8 +145,7 @@ type Result struct {
 
 // Sent from client to server to attain a caller identity.
 type Identity struct {
-	Provider string
-	Token    string
+	Token []byte
 }
 
 // Sent in both directions.

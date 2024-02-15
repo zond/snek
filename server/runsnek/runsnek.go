@@ -14,8 +14,8 @@ type Member struct {
 	UserID  snek.ID
 }
 
-func queryControlMember(v *snek.View, s snek.Set) error {
-	isOK, err := snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}.Includes(s)
+func queryControlMember(v *snek.View, query *snek.Query) error {
+	isOK, err := snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}.Includes(query.Set)
 	if err != nil {
 		return err
 	}
@@ -60,12 +60,12 @@ func ownGroupsCond(v *snek.View) (snek.Set, error) {
 	return or, nil
 }
 
-func queryControlMessage(v *snek.View, s snek.Set) error {
+func queryControlMessage(v *snek.View, query *snek.Query) error {
 	ownGroups, err := ownGroupsCond(v)
 	if err != nil {
 		return err
 	}
-	isOK, err := ownGroups.Includes(s)
+	isOK, err := ownGroups.Includes(query.Set)
 	if err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func (s simpleCaller) IsSystem() bool {
 }
 
 func (t trustingIdentifier) Identify(i *server.Identity) (snek.Caller, error) {
-	return simpleCaller{userID: []byte(i.Token)}, nil
+	return simpleCaller{userID: i.Token}, nil
 }
 
 func main() {

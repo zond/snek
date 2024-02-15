@@ -39,7 +39,7 @@ func (o Options) Open() (*Snek, error) {
 		db:            db,
 		options:       o,
 		rng:           rand.New(rand.NewSource(o.RandomSeed)),
-		subscriptions: synch.NewSMap[string, *synch.SMap[string, subscription]](),
+		subscriptions: synch.NewSMap[string, *synch.SMap[string, Subscription]](),
 		permissions:   map[string]permissions{},
 	}, nil
 }

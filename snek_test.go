@@ -73,6 +73,13 @@ func (t *testSnek) mustFalse(b bool, err error) {
 	}
 }
 
+func (t *testSnek) mustAny(a any, err error) {
+	t.t.Helper()
+	if err != nil {
+		t.t.Errorf("got %v, wanted no error", err)
+	}
+}
+
 func (t *testSnek) must(err error) {
 	t.t.Helper()
 	if err != nil {
@@ -150,7 +157,7 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		}))
 		s.must(Register(s.Snek, ts, UncontrolledQueries, UncontrolledUpdates(ts)))
 		matchingString := make(chan []testStruct)
-		s.must(Subscribe(s.Snek, systemCaller{}, Query{Set: Cond{"String", EQ, "string"}}, func(res []testStruct, err error) error {
+		s.mustAny(Subscribe(s.Snek, systemCaller{}, Query{Set: Cond{"String", EQ, "string"}}, func(res []testStruct, err error) error {
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -161,13 +168,16 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 			t.Errorf("wanted no results, got %+v", got)
 		}
 		matchingAnotherString := make(chan []testStruct)
-		s.must(Subscribe(s.Snek, systemCaller{}, Query{Set: Cond{"String", EQ, "another string"}}, func(res []testStruct, err error) error {
+		anotherStringSubscription, err := Subscribe(s.Snek, systemCaller{}, Query{Set: Cond{"String", EQ, "another string"}}, func(res []testStruct, err error) error {
 			if err != nil {
 				t.Fatal(err)
 			}
 			matchingAnotherString <- res
 			return nil
-		}))
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if got := <-matchingAnotherString; len(got) > 0 {
 			t.Errorf("wanted no results, got %+v", got)
 		}
@@ -209,13 +219,25 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		s.must(s.Update(systemCaller{}, func(u *Update) error {
 			return u.Remove(ts)
 		}))
-		if got := matchingAnotherString; len(got) != 0 {
+		if got := <-matchingAnotherString; len(got) != 0 {
 			t.Errorf("wanted no results, got %+v", got)
 		}
 		mustUnavail(t, matchingString)
 		s.mustNot(s.View(systemCaller{}, func(v *View) error {
 			return v.Get(ts)
 		}))
+		s.must(s.Update(systemCaller{}, func(u *Update) error {
+			return u.Insert(ts)
+		}))
+		if got := <-matchingAnotherString; len(got) != 1 || got[0].ID.String() != ts.ID.String() {
+			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts})
+		}
+		s.must(anotherStringSubscription.Close())
+		ts.Int = 99
+		s.must(s.Update(systemCaller{}, func(u *Update) error {
+			return u.Update(ts)
+		}))
+		mustUnavail(t, matchingAnotherString)
 	})
 }
 
@@ -524,7 +546,7 @@ func TestPermissions(t *testing.T) {
 	withSnek(t, func(s *testSnek) {
 		var queryError, updateError error
 		caller := testCaller{userID: s.NewID()}
-		s.must(Register(s.Snek, &testStruct{}, func(view *View, set Set) error {
+		s.must(Register(s.Snek, &testStruct{}, func(view *View, query *Query) error {
 			if view.Caller().UserID().String() != caller.userID.String() {
 				t.Errorf("got %s, want %s", view.Caller().UserID(), caller.userID)
 			}

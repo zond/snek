@@ -23,12 +23,12 @@ func (v *View) Caller() Caller {
 	return v.caller
 }
 
-func (v *View) queryControl(typ reflect.Type, set Set) error {
+func (v *View) queryControl(typ reflect.Type, query *Query) error {
 	perms, found := v.snek.permissions[typ.Name()]
 	if !found || perms.queryControl == nil {
 		return fmt.Errorf("%s not registered with query control", typ.Name())
 	}
-	return perms.queryControl(v, set)
+	return perms.queryControl(v, query)
 }
 
 // Update represents a read/write transaction.
@@ -86,7 +86,7 @@ func (v *View) Select(structSlicePointer any, query Query) error {
 		return fmt.Errorf("only pointers to slices of structs allowed, not %v", structSlicePointer)
 	}
 	structType := typ.Elem().Elem()
-	if err := v.queryControl(structType, query.Set); err != nil {
+	if err := v.queryControl(structType, &query); err != nil {
 		return err
 	}
 	condition, params := query.Set.toWhereCondition()
@@ -126,7 +126,7 @@ func (v *View) Get(structPointer any) error {
 	if err != nil {
 		return err
 	}
-	if err := v.queryControl(info.typ, Cond{"ID", EQ, info.id}); err != nil {
+	if err := v.queryControl(info.typ, &Query{Set: Cond{"ID", EQ, info.id}}); err != nil {
 		return err
 	}
 	return v.get(structPointer, info)

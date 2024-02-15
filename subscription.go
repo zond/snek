@@ -18,8 +18,12 @@ type typedSubscription[T any] struct {
 	caller     Caller
 }
 
-func (s *typedSubscription[T]) getID() ID {
-	return s.id
+func (s *typedSubscription[T]) Close() error {
+	_, found := s.snek.getSubscriptions(s.typ).Del(string(s.id))
+	if !found {
+		return fmt.Errorf("not open")
+	}
+	return nil
 }
 
 func (s *typedSubscription[T]) matches(val reflect.Value) bool {
@@ -51,7 +55,7 @@ func (s *typedSubscription[T]) push() {
 // the query, and asynchronously sends the current content and the
 // content post any update of the store to the subscriber.
 // Once the subscriber returns an error it will be cleaned up and removed.
-func Subscribe[T any](s *Snek, caller Caller, query Query, subscriber Subscriber[T]) error {
+func Subscribe[T any](s *Snek, caller Caller, query Query, subscriber Subscriber[T]) (Subscription, error) {
 	sub := &typedSubscription[T]{
 		typ:        reflect.TypeOf(*new(T)),
 		id:         s.NewID(),
@@ -62,10 +66,10 @@ func Subscribe[T any](s *Snek, caller Caller, query Query, subscriber Subscriber
 	}
 	subs := s.getSubscriptions(sub.typ)
 	if _, found := subs.Set(string(sub.id), sub); found {
-		return fmt.Errorf("found previous subscription with new subscription ID %+v. This should never happen.", sub.id)
+		return nil, fmt.Errorf("found previous subscription with new subscription ID %+v. This should never happen.", sub.id)
 	}
 	go func() {
 		sub.push()
 	}()
-	return nil
+	return sub, nil
 }

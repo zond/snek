@@ -31,17 +31,17 @@ var (
 	idType = reflect.TypeOf(ID{})
 )
 
-type subscription interface {
+type Subscription interface {
 	push()
 	matches(reflect.Value) bool
-	getID() ID
+	Close() error
 }
 
-type subscriptionSet map[string]subscription
+type subscriptionSet map[string]Subscription
 
 func (s subscriptionSet) push() {
 	for _, loopSub := range s {
-		go func(s subscription) {
+		go func(s Subscription) {
 			s.push()
 		}(loopSub)
 	}
@@ -55,7 +55,7 @@ func (s subscriptionSet) merge(other subscriptionSet) subscriptionSet {
 }
 
 type permissions struct {
-	queryControl  func(*View, Set) error
+	queryControl  func(*View, *Query) error
 	updateControl func(*Update, any, any) error
 }
 
@@ -65,7 +65,7 @@ type Snek struct {
 	db            *sqlx.DB
 	options       Options
 	rng           *rand.Rand
-	subscriptions *synch.SMap[string, *synch.SMap[string, subscription]]
+	subscriptions *synch.SMap[string, *synch.SMap[string, Subscription]]
 	permissions   map[string]permissions
 }
 
@@ -84,7 +84,7 @@ func (s systemCaller) IsSystem() bool {
 }
 
 // UncontrolledQueries is a QueryControl that doesn't block any queries.
-func UncontrolledQueries(*View, Set) error {
+func UncontrolledQueries(*View, *Query) error {
 	return nil
 }
 
@@ -97,10 +97,12 @@ func UncontrolledUpdates[T any](t *T) UpdateControl[T] {
 
 // QueryControl returns nil if reading from the set is allowed in this view.
 // Use View#Caller to examine the caller identity.
-type QueryControl func(*View, Set) error
+// It is permissible for QueryControl to modify the query if necessary.
+type QueryControl func(*View, *Query) error
 
 // UpdateControl returns nil if the update from prev (nil if Insert) to next (nil if Remove) is allowed in this update.
 // Use Update#Caller to examine the caller identity.
+// It is permissible for UpdateControl to modify the next value if necessary.
 type UpdateControl[T any] func(u *Update, prev *T, next *T) error
 
 func (u UpdateControl[T]) call(update *Update, prev, next any) error {
@@ -135,7 +137,7 @@ func Register[T any](s *Snek, structPointer *T, queryControl QueryControl, updat
 
 func (s *Snek) getSubscriptionsFor(val reflect.Value) subscriptionSet {
 	result := subscriptionSet{}
-	s.getSubscriptions(val.Type()).Each(func(id string, sub subscription) {
+	s.getSubscriptions(val.Type()).Each(func(id string, sub Subscription) {
 		if sub.matches(val) {
 			result[id] = sub
 		}
@@ -143,8 +145,8 @@ func (s *Snek) getSubscriptionsFor(val reflect.Value) subscriptionSet {
 	return result
 }
 
-func (s *Snek) getSubscriptions(typ reflect.Type) *synch.SMap[string, subscription] {
-	result, _ := s.subscriptions.SetIfMissing(typ.Name(), synch.NewSMap[string, subscription]())
+func (s *Snek) getSubscriptions(typ reflect.Type) *synch.SMap[string, Subscription] {
+	result, _ := s.subscriptions.SetIfMissing(typ.Name(), synch.NewSMap[string, Subscription]())
 	return result
 }
 
