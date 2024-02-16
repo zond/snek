@@ -61,17 +61,7 @@ func ownGroupsCond(v *snek.View) (snek.Set, error) {
 }
 
 func queryControlMessage(v *snek.View, query *snek.Query) error {
-	ownGroups, err := ownGroupsCond(v)
-	if err != nil {
-		return err
-	}
-	isOK, err := ownGroups.Includes(query.Set)
-	if err != nil {
-		return err
-	}
-	if !isOK {
-		return fmt.Errorf("can only query messages from your own groups")
-	}
+	query.Joins = append(query.Joins, snek.NewJoin(&Member{}, snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}, []snek.On{{"GroupID", snek.EQ, "GroupID"}}))
 	return nil
 }
 
@@ -80,15 +70,11 @@ func updateControlMessage(u *snek.Update, prev, next *Message) error {
 		if !next.Sender.Equal(u.Caller().UserID()) {
 			return fmt.Errorf("can only insert messages from yourself")
 		}
-		ownGroups, err := ownGroupsCond(u.View)
-		if err != nil {
+		members := []Member{}
+		if err := u.Select(&members, snek.Query{Set: snek.And{snek.Cond{"UserID", snek.EQ, u.Caller().UserID()}, snek.Cond{"GroupID", snek.EQ, next.GroupID}}}); err != nil {
 			return err
 		}
-		isOK, err := ownGroups.Includes(snek.Cond{"GroupID", snek.EQ, next.GroupID})
-		if err != nil {
-			return err
-		}
-		if !isOK {
+		if len(members) == 0 {
 			return fmt.Errorf("can only insert messages into your own groups")
 		}
 		return nil
