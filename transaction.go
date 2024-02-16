@@ -1,12 +1,10 @@
 package snek
 
 import (
-	"bytes"
 	"database/sql"
 	"fmt"
 	"log"
 	"reflect"
-	"strings"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -89,34 +87,16 @@ func (v *View) Select(structSlicePointer any, query Query) error {
 	if err := v.queryControl(structType, &query); err != nil {
 		return err
 	}
-	condition, params := query.Set.toWhereCondition()
-	buf := &bytes.Buffer{}
-	fmt.Fprintf(buf, "SELECT * FROM \"%s\" WHERE %s", typ.Elem().Elem().Name(), condition)
-	if len(query.Order) > 0 {
-		orderParts := []string{}
-		for _, order := range query.Order {
-			if order.Desc {
-				orderParts = append(orderParts, fmt.Sprintf("\"%s\" DESC", order.Field))
-			} else {
-				orderParts = append(orderParts, fmt.Sprintf("\"%s\" ASC", order.Field))
-			}
-		}
-		fmt.Fprintf(buf, " ORDER BY %s", strings.Join(orderParts, ", "))
-	}
-	if query.Limit != 0 {
-		fmt.Fprintf(buf, " LIMIT %d", query.Limit)
-	}
-	fmt.Fprint(buf, ";")
-	queryString := buf.String()
-	err := v.tx.SelectContext(v.snek.ctx, structSlicePointer, queryString, params...)
-	logSQL(v.snek, "QUERY", queryString, params, err)
+	sql, params := query.toSelectStatement(structType)
+	err := v.tx.SelectContext(v.snek.ctx, structSlicePointer, sql, params...)
+	logSQL(v.snek, "QUERY", sql, params, err)
 	return err
 }
 
 func (v *View) get(structPointer any, info *valueInfo) error {
-	query, params := info.toGetStatement()
-	err := v.tx.GetContext(v.snek.ctx, structPointer, query, params...)
-	logSQL(v.snek, "QUERY", query, params, err)
+	sql, params := info.toGetStatement()
+	err := v.tx.GetContext(v.snek.ctx, structPointer, sql, params...)
+	logSQL(v.snek, "QUERY", sql, params, err)
 	return err
 }
 
@@ -126,10 +106,14 @@ func (v *View) Get(structPointer any) error {
 	if err != nil {
 		return err
 	}
-	if err := v.queryControl(info.typ, &Query{Set: Cond{"ID", EQ, info.id}}); err != nil {
+	query := &Query{Set: Cond{"ID", EQ, info.id}}
+	if err := v.queryControl(info.typ, query); err != nil {
 		return err
 	}
-	return v.get(structPointer, info)
+	sql, params := query.toSelectStatement(info.typ)
+	err = v.tx.GetContext(v.snek.ctx, structPointer, sql, params...)
+	logSQL(v.snek, "QUERY", sql, params, err)
+	return err
 }
 
 // Update executs f in the context of a read/write transaction.
@@ -187,8 +171,8 @@ func (u *Update) Remove(structPointer any) error {
 		return err
 	}
 
-	query, params := info.toDelStatement()
-	if err := u.exec(query, params...); err != nil {
+	sql, params := info.toDelStatement()
+	if err := u.exec(sql, params...); err != nil {
 		return err
 	}
 	return nil
@@ -210,8 +194,8 @@ func (u *Update) Update(structPointer any) error {
 		return err
 	}
 
-	query, params := info.toUpdateStatement()
-	if err := u.exec(query, params...); err != nil {
+	sql, params := info.toUpdateStatement()
+	if err := u.exec(sql, params...); err != nil {
 		return err
 	}
 	u.subscriptions.merge(u.snek.getSubscriptionsFor(info.val))
@@ -229,16 +213,16 @@ func (u *Update) Insert(structPointer any) error {
 		return err
 	}
 
-	query, params := info.toInsertStatement()
-	if err := u.exec(query, params...); err != nil {
+	sql, params := info.toInsertStatement()
+	if err := u.exec(sql, params...); err != nil {
 		return err
 	}
 	u.subscriptions.merge(u.snek.getSubscriptionsFor(info.val))
 	return nil
 }
 
-func (u *Update) exec(query string, params ...any) error {
-	_, err := u.tx.ExecContext(u.snek.ctx, query, params...)
-	logSQL(u.snek, "EXEC", query, params, err)
+func (u *Update) exec(sql string, params ...any) error {
+	_, err := u.tx.ExecContext(u.snek.ctx, sql, params...)
+	logSQL(u.snek, "EXEC", sql, params, err)
 	return err
 }

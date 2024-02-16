@@ -187,7 +187,7 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		s.must(s.Update(systemCaller{}, func(u *Update) error {
 			return u.Insert(ts)
 		}))
-		if got := <-matchingString; len(got) != 1 || got[0].ID.String() != ts.ID.String() {
+		if got := <-matchingString; len(got) != 1 || !got[0].ID.Equal(ts.ID) {
 			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts})
 		}
 		mustUnavail(t, matchingAnotherString)
@@ -204,7 +204,7 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		s.must(s.Update(systemCaller{}, func(u *Update) error {
 			return u.Update(ts)
 		}))
-		if got := <-matchingAnotherString; len(got) != 1 || got[0].ID.String() != ts.ID.String() {
+		if got := <-matchingAnotherString; len(got) != 1 || !got[0].ID.Equal(ts.ID) {
 			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts})
 		}
 		if got := <-matchingString; len(got) != 0 {
@@ -229,7 +229,7 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		s.must(s.Update(systemCaller{}, func(u *Update) error {
 			return u.Insert(ts)
 		}))
-		if got := <-matchingAnotherString; len(got) != 1 || got[0].ID.String() != ts.ID.String() {
+		if got := <-matchingAnotherString; len(got) != 1 || !got[0].ID.Equal(ts.ID) {
 			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts})
 		}
 		s.must(anotherStringSubscription.Close())
@@ -527,7 +527,8 @@ func TestSetIncludes(t *testing.T) {
 }
 
 type testCaller struct {
-	userID ID
+	userID  ID
+	isAdmin bool
 }
 
 func (t testCaller) UserID() ID {
@@ -535,7 +536,7 @@ func (t testCaller) UserID() ID {
 }
 
 func (t testCaller) IsAdmin() bool {
-	return false
+	return t.isAdmin
 }
 
 func (t testCaller) IsSystem() bool {
@@ -547,12 +548,12 @@ func TestPermissions(t *testing.T) {
 		var queryError, updateError error
 		caller := testCaller{userID: s.NewID()}
 		s.must(Register(s.Snek, &testStruct{}, func(view *View, query *Query) error {
-			if view.Caller().UserID().String() != caller.userID.String() {
+			if !view.Caller().UserID().Equal(caller.userID) {
 				t.Errorf("got %s, want %s", view.Caller().UserID(), caller.userID)
 			}
 			return queryError
 		}, func(update *Update, prev, next *testStruct) error {
-			if update.Caller().UserID().String() != caller.userID.String() {
+			if !update.Caller().UserID().Equal(caller.userID) {
 				t.Errorf("got %s, want %s", update.Caller().UserID(), caller.userID)
 			}
 			return updateError
@@ -578,5 +579,50 @@ func TestPermissions(t *testing.T) {
 		s.must(s.View(caller, func(v *View) error {
 			return v.Get(ts)
 		}))
+	})
+}
+
+func TestModifyingPermissions(t *testing.T) {
+	withSnek(t, func(s *testSnek) {
+		regularCaller := testCaller{userID: s.NewID()}
+		adminCaller := testCaller{isAdmin: true}
+		s.must(Register(s.Snek, &testStruct{}, func(view *View, query *Query) error {
+			if !view.Caller().IsAdmin() {
+				query.Set = And{query.Set, Cond{"String", EQ, "approved"}}
+			}
+			return nil
+		}, func(update *Update, prev, next *testStruct) error {
+			if !update.Caller().IsAdmin() {
+				next.String = "unapproved"
+			}
+			return nil
+		}))
+		ts := &testStruct{ID: s.NewID(), Int: 7, String: "whatever"}
+		s.must(s.Update(regularCaller, func(u *Update) error {
+			return u.Insert(ts)
+		}))
+		found := []testStruct{}
+		s.must(s.View(regularCaller, func(v *View) error {
+			return v.Select(&found, Query{})
+		}))
+		if len(found) != 0 {
+			t.Errorf("got %+v, wanted no matches", found)
+		}
+		s.must(s.View(adminCaller, func(v *View) error {
+			return v.Select(&found, Query{})
+		}))
+		if len(found) != 1 || !found[0].ID.Equal(ts.ID) || found[0].String != "unapproved" {
+			t.Errorf("got %+v, wanted %+v", found, []testStruct{*ts})
+		}
+		ts.String = "approved"
+		s.must(s.Update(adminCaller, func(u *Update) error {
+			return u.Update(ts)
+		}))
+		s.must(s.View(regularCaller, func(v *View) error {
+			return v.Select(&found, Query{})
+		}))
+		if len(found) != 1 || !found[0].ID.Equal(ts.ID) {
+			t.Errorf("got %+v, wanted %+v", found, []testStruct{*ts})
+		}
 	})
 }

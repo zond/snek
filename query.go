@@ -1,6 +1,7 @@
 package snek
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"strings"
@@ -21,7 +22,7 @@ type Set interface {
 type All struct{}
 
 func (a All) toWhereCondition() (string, []any) {
-	return "(1 = 1)", nil
+	return "1 = 1", nil
 }
 
 func (a All) matches(reflect.Value) (bool, error) {
@@ -323,8 +324,14 @@ func (a And) toWhereCondition() (string, []any) {
 	stringParts := []string{}
 	valueParts := []any{}
 	for _, set := range a {
-		query, params := set.toWhereCondition()
-		stringParts = append(stringParts, fmt.Sprintf("(%s)", query))
+		var sql string
+		var params []any
+		if set == nil {
+			sql, params = All{}.toWhereCondition()
+		} else {
+			sql, params = set.toWhereCondition()
+		}
+		stringParts = append(stringParts, fmt.Sprintf("(%s)", sql))
 		valueParts = append(valueParts, params...)
 	}
 	return strings.Join(stringParts, " AND "), valueParts
@@ -453,4 +460,32 @@ type Query struct {
 	Set   Set
 	Limit uint
 	Order []Order
+}
+
+func (q *Query) toSelectStatement(structType reflect.Type) (string, []any) {
+	var sql string
+	var params []any
+	if q.Set == nil {
+		sql, params = All{}.toWhereCondition()
+	} else {
+		sql, params = q.Set.toWhereCondition()
+	}
+	buf := &bytes.Buffer{}
+	fmt.Fprintf(buf, "SELECT * FROM \"%s\" WHERE %s", structType.Name(), sql)
+	if len(q.Order) > 0 {
+		orderParts := []string{}
+		for _, order := range q.Order {
+			if order.Desc {
+				orderParts = append(orderParts, fmt.Sprintf("\"%s\" DESC", order.Field))
+			} else {
+				orderParts = append(orderParts, fmt.Sprintf("\"%s\" ASC", order.Field))
+			}
+		}
+		fmt.Fprintf(buf, " ORDER BY %s", strings.Join(orderParts, ", "))
+	}
+	if q.Limit != 0 {
+		fmt.Fprintf(buf, " LIMIT %d", q.Limit)
+	}
+	fmt.Fprint(buf, ";")
+	return buf.String(), params
 }
