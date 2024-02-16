@@ -1,21 +1,29 @@
 package snek
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"reflect"
+
+	"github.com/minio/highwayhash"
+)
+
+var (
+	highwayHashKey = []byte("01234567801234567899012345678901")
 )
 
 // Subscriber handles results from subscriptions.
 type Subscriber[T any] func([]T, error) error
 
 type typedSubscription[T any] struct {
-	typ        reflect.Type
-	id         ID
-	query      Query
-	snek       *Snek
-	subscriber Subscriber[T]
-	caller     Caller
+	typ          reflect.Type
+	id           ID
+	query        Query
+	snek         *Snek
+	subscriber   Subscriber[T]
+	caller       Caller
+	lastPushHash [highwayhash.Size]byte
 }
 
 func (s *typedSubscription[T]) Close() error {
@@ -33,21 +41,38 @@ func (s *typedSubscription[T]) matches(val reflect.Value) bool {
 	matches, err := s.query.Set.matches(val)
 	if err != nil {
 		query, _ := s.query.Set.toWhereCondition(s.typ.Name())
-		log.Printf("While matching %+v to %q: %v", val.Interface(), query, err)
+		log.Printf("while matching %+v to %q: %v", val.Interface(), query, err)
 		return false
 	}
 	return matches
 }
 
-func (s *typedSubscription[T]) push() {
+func (s *typedSubscription[T]) load() ([]T, bool, error) {
 	results := []T{}
-	subscriberErr := s.snek.View(s.caller, func(v *View) error {
+	err := s.snek.View(s.caller, func(v *View) error {
 		return v.Select(&results, s.query)
 	})
-	pushErr := s.subscriber(results, subscriberErr)
-	if pushErr != nil {
-		subs := s.snek.getSubscriptions(s.typ)
-		subs.Del(string(s.id))
+	if err != nil {
+		return nil, true, err
+	}
+	b, err := json.Marshal(results)
+	if err != nil {
+		return nil, true, err
+	}
+	hash := highwayhash.Sum(b, highwayHashKey)
+	changed := hash != s.lastPushHash
+	s.lastPushHash = hash
+	return results, changed, nil
+}
+
+func (s *typedSubscription[T]) push() {
+	results, changed, loadErr := s.load()
+	if changed {
+		pushErr := s.subscriber(results, loadErr)
+		if pushErr != nil {
+			subs := s.snek.getSubscriptions(s.typ)
+			subs.Del(string(s.id))
+		}
 	}
 }
 
@@ -58,6 +83,9 @@ func (s *typedSubscription[T]) push() {
 func Subscribe[T any](s *Snek, caller Caller, query Query, subscriber Subscriber[T]) (Subscription, error) {
 	if len(query.Joins) > 0 {
 		return nil, fmt.Errorf("join queries can't be subscribed - notifying on updates in joins not implemented")
+	}
+	if query.Set == nil {
+		query.Set = All{}
 	}
 	sub := &typedSubscription[T]{
 		typ:        reflect.TypeOf(*new(T)),

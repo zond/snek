@@ -524,12 +524,15 @@ func (q *Query) toSelectStatement(structType reflect.Type) (string, []any) {
 		distinct = "DISTINCT "
 	}
 	fmt.Fprintf(buf, "SELECT %s\"%s\".* FROM \"%s\"", distinct, structType.Name(), structType.Name())
-	mainSQL, params := getWhereCondition(structType.Name(), q.Set, All{})
+	if q.Set == nil {
+		q.Set = All{}
+	}
+	mainSQL, params := q.Set.toWhereCondition(structType.Name())
 	sqlParts := []string{mainSQL}
 	for joinIndex, join := range q.Joins {
 		joinName := fmt.Sprintf("j%d", joinIndex)
 		fmt.Fprintf(buf, "\nJOIN \"%s\" %s ON %s", join.typ.Name(), joinName, join.toOnCondition(structType.Name(), joinName))
-		joinSQL, joinParams := getWhereCondition(joinName, join.set, All{})
+		joinSQL, joinParams := join.set.toWhereCondition(joinName)
 		sqlParts = append(sqlParts, joinSQL)
 		params = append(params, joinParams...)
 	}

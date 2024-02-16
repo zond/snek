@@ -151,12 +151,12 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 	withSnek(t, func(s *testSnek) {
 		ts := &testStruct{ID: s.NewID(), String: "string"}
 		ts2 := &testStruct{ID: ts.ID}
-		s.mustNot(s.View(systemCaller{}, func(v *View) error {
+		s.mustNot(s.View(AnonCaller{}, func(v *View) error {
 			return v.Get(ts2)
 		}))
 		s.must(Register(s.Snek, ts, UncontrolledQueries, UncontrolledUpdates(ts)))
 		matchingString := make(chan []testStruct)
-		s.mustAny(Subscribe(s.Snek, systemCaller{}, Query{Set: Cond{"String", EQ, "string"}}, func(res []testStruct, err error) error {
+		s.mustAny(Subscribe(s.Snek, AnonCaller{}, Query{Set: Cond{"String", EQ, "string"}}, func(res []testStruct, err error) error {
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -167,7 +167,7 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 			t.Errorf("wanted no results, got %+v", got)
 		}
 		matchingAnotherString := make(chan []testStruct)
-		anotherStringSubscription, err := Subscribe(s.Snek, systemCaller{}, Query{Set: Cond{"String", EQ, "another string"}}, func(res []testStruct, err error) error {
+		anotherStringSubscription, err := Subscribe(s.Snek, AnonCaller{}, Query{Set: Cond{"String", EQ, "another string"}}, func(res []testStruct, err error) error {
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -180,27 +180,27 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		if got := <-matchingAnotherString; len(got) > 0 {
 			t.Errorf("wanted no results, got %+v", got)
 		}
-		s.mustNot(s.View(systemCaller{}, func(v *View) error {
+		s.mustNot(s.View(AnonCaller{}, func(v *View) error {
 			return v.Get(ts2)
 		}))
-		s.must(s.Update(systemCaller{}, func(u *Update) error {
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
 			return u.Insert(ts)
 		}))
 		if got := <-matchingString; len(got) != 1 || !got[0].ID.Equal(ts.ID) {
 			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts})
 		}
 		mustUnavail(t, matchingAnotherString)
-		s.must(s.View(systemCaller{}, func(v *View) error {
+		s.must(s.View(AnonCaller{}, func(v *View) error {
 			return v.Get(ts2)
 		}))
 		if ts2.String != ts.String {
 			t.Errorf("got %v, want %v", ts2.String, ts.String)
 		}
-		s.mustNot(s.Update(systemCaller{}, func(u *Update) error {
+		s.mustNot(s.Update(AnonCaller{}, func(u *Update) error {
 			return u.Insert(ts)
 		}))
 		ts.String = "another string"
-		s.must(s.Update(systemCaller{}, func(u *Update) error {
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
 			return u.Update(ts)
 		}))
 		if got := <-matchingAnotherString; len(got) != 1 || !got[0].ID.Equal(ts.ID) {
@@ -209,23 +209,23 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		if got := <-matchingString; len(got) != 0 {
 			t.Errorf("wanted no results, got %+v", got)
 		}
-		s.must(s.View(systemCaller{}, func(v *View) error {
+		s.must(s.View(AnonCaller{}, func(v *View) error {
 			return v.Get(ts2)
 		}))
 		if ts2.String != ts.String {
 			t.Errorf("got %v, want %v", ts2.String, ts.String)
 		}
-		s.must(s.Update(systemCaller{}, func(u *Update) error {
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
 			return u.Remove(ts)
 		}))
 		if got := <-matchingAnotherString; len(got) != 0 {
 			t.Errorf("wanted no results, got %+v", got)
 		}
 		mustUnavail(t, matchingString)
-		s.mustNot(s.View(systemCaller{}, func(v *View) error {
+		s.mustNot(s.View(AnonCaller{}, func(v *View) error {
 			return v.Get(ts)
 		}))
-		s.must(s.Update(systemCaller{}, func(u *Update) error {
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
 			return u.Insert(ts)
 		}))
 		if got := <-matchingAnotherString; len(got) != 1 || !got[0].ID.Equal(ts.ID) {
@@ -233,7 +233,7 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		}
 		s.must(anotherStringSubscription.Close())
 		ts.Int = 99
-		s.must(s.Update(systemCaller{}, func(u *Update) error {
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
 			return u.Update(ts)
 		}))
 		mustUnavail(t, matchingAnotherString)
@@ -247,13 +247,13 @@ func TestSelect(t *testing.T) {
 		ts3 := &testStruct{ID: s.NewID(), String: "string3", Int: 3, Inner: innerTestStruct{Float: 2}}
 		ts4 := &testStruct{ID: s.NewID(), String: "string4", Int: 4, Inner: innerTestStruct{Float: 2}}
 		s.must(Register(s.Snek, ts1, UncontrolledQueries, UncontrolledUpdates(ts1)))
-		s.must(s.Update(systemCaller{}, func(u *Update) error {
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
 			s.must(u.Insert(ts1))
 			s.must(u.Insert(ts2))
 			s.must(u.Insert(ts3))
 			return u.Insert(ts4)
 		}))
-		s.must(s.View(systemCaller{}, func(v *View) error {
+		s.must(s.View(AnonCaller{}, func(v *View) error {
 			res := []testStruct{}
 			s.must(v.Select(&res, Query{Set: Or{
 				Cond{"String", EQ, "string1"},
@@ -622,6 +622,40 @@ func TestModifyingPermissions(t *testing.T) {
 		if len(found) != 1 || !found[0].ID.Equal(ts.ID) {
 			t.Errorf("got %+v, wanted %+v", found, []testStruct{*ts})
 		}
+	})
+}
+
+func TestSubscriptionHash(t *testing.T) {
+	withSnek(t, func(s *testSnek) {
+		s.must(Register(s.Snek, &testStruct{}, UncontrolledQueries, UncontrolledUpdates(&testStruct{})))
+		ts1 := &testStruct{ID: s.NewID(), Int: 1}
+		ts2 := &testStruct{ID: s.NewID(), Int: 2}
+		ts3 := &testStruct{ID: s.NewID(), Int: 3}
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
+			if err := u.Insert(ts1); err != nil {
+				return err
+			}
+			if err := u.Insert(ts2); err != nil {
+				return err
+			}
+			return u.Insert(ts3)
+		}))
+		inc := make(chan []testStruct)
+		s.mustAny(Subscribe(s.Snek, AnonCaller{}, Query{Limit: 1, Order: []Order{{Field: "Int"}}}, func(res []testStruct, err error) error {
+			if err != nil {
+				t.Fatal(err)
+			}
+			inc <- res
+			return nil
+		}))
+		if got := <-inc; len(got) != 1 || !got[0].ID.Equal(ts1.ID) {
+			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts1})
+		}
+		ts2.String = "string"
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
+			return u.Update(ts2)
+		}))
+		mustUnavail(t, inc)
 	})
 }
 
