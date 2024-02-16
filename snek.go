@@ -83,6 +83,21 @@ func (s systemCaller) IsSystem() bool {
 	return true
 }
 
+// AnonCaller is a caller without identity.
+type AnonCaller struct{}
+
+func (a AnonCaller) UserID() ID {
+	return nil
+}
+
+func (a AnonCaller) IsAdmin() bool {
+	return false
+}
+
+func (a AnonCaller) IsSystem() bool {
+	return false
+}
+
 // UncontrolledQueries is a QueryControl that doesn't block any queries.
 func UncontrolledQueries(*View, *Query) error {
 	return nil
@@ -111,7 +126,7 @@ func (u UpdateControl[T]) call(update *Update, prev, next any) error {
 
 // Register registers the type of the example structPointer in the store and ensures there is a table for the type.
 func Register[T any](s *Snek, structPointer *T, queryControl QueryControl, updateControl UpdateControl[T]) error {
-	info, err := s.getValueInfo(reflect.ValueOf(structPointer))
+	info, err := getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}

@@ -32,7 +32,7 @@ func (s *typedSubscription[T]) matches(val reflect.Value) bool {
 	}
 	matches, err := s.query.Set.matches(val)
 	if err != nil {
-		query, _ := s.query.Set.toWhereCondition()
+		query, _ := s.query.Set.toWhereCondition(s.typ.Name())
 		log.Printf("While matching %+v to %q: %v", val.Interface(), query, err)
 		return false
 	}

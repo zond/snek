@@ -112,8 +112,7 @@ func withSnek(t *testing.T, f func(s *testSnek)) {
 	opts := DefaultOptions(filepath.Join(dir, "sqlite.db"))
 	opts.Logger = log.Default()
 	if Verbose {
-		opts.LogExec = true
-		opts.LogQuery = true
+		opts.LogSQL = true
 	}
 	s, err := opts.Open()
 	defer func() {
@@ -584,7 +583,6 @@ func TestPermissions(t *testing.T) {
 
 func TestModifyingPermissions(t *testing.T) {
 	withSnek(t, func(s *testSnek) {
-		regularCaller := testCaller{userID: s.NewID()}
 		adminCaller := testCaller{isAdmin: true}
 		s.must(Register(s.Snek, &testStruct{}, func(view *View, query *Query) error {
 			if !view.Caller().IsAdmin() {
@@ -598,11 +596,11 @@ func TestModifyingPermissions(t *testing.T) {
 			return nil
 		}))
 		ts := &testStruct{ID: s.NewID(), Int: 7, String: "whatever"}
-		s.must(s.Update(regularCaller, func(u *Update) error {
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
 			return u.Insert(ts)
 		}))
 		found := []testStruct{}
-		s.must(s.View(regularCaller, func(v *View) error {
+		s.must(s.View(AnonCaller{}, func(v *View) error {
 			return v.Select(&found, Query{})
 		}))
 		if len(found) != 0 {
@@ -618,11 +616,48 @@ func TestModifyingPermissions(t *testing.T) {
 		s.must(s.Update(adminCaller, func(u *Update) error {
 			return u.Update(ts)
 		}))
-		s.must(s.View(regularCaller, func(v *View) error {
+		s.must(s.View(AnonCaller{}, func(v *View) error {
 			return v.Select(&found, Query{})
 		}))
 		if len(found) != 1 || !found[0].ID.Equal(ts.ID) {
 			t.Errorf("got %+v, wanted %+v", found, []testStruct{*ts})
+		}
+	})
+}
+
+func TestJoin(t *testing.T) {
+	withSnek(t, func(s *testSnek) {
+		s.must(Register(s.Snek, &testStruct{}, UncontrolledQueries, UncontrolledUpdates(&testStruct{})))
+		ts1 := &testStruct{ID: s.NewID(), Int: 7, String: "whatever"}
+		ts2 := &testStruct{ID: s.NewID(), Int: 9, String: "whatever"}
+		ts3 := &testStruct{ID: s.NewID(), Int: 11, String: "something else"}
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
+			if err := u.Insert(ts1); err != nil {
+				return err
+			}
+			if err := u.Insert(ts2); err != nil {
+				return err
+			}
+			return u.Insert(ts3)
+		}))
+		got := []testStruct{}
+		s.must(s.View(AnonCaller{}, func(v *View) error {
+			return v.Select(&got, Query{Set: Cond{"Int", LT, 9}, Joins: []Join{NewJoin(&testStruct{}, Cond{"Int", EQ, 9}, []On{{"String", EQ, "String"}})}})
+		}))
+		if len(got) != 1 || !got[0].ID.Equal(ts1.ID) {
+			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts1})
+		}
+		s.must(s.View(AnonCaller{}, func(v *View) error {
+			return v.Select(&got, Query{Set: Cond{"Int", LT, 9}, Joins: []Join{NewJoin(&testStruct{}, Cond{"Int", EQ, 11}, []On{{"String", EQ, "String"}})}})
+		}))
+		if len(got) != 0 {
+			t.Errorf("got %+v, wanted no results", got)
+		}
+		s.must(s.View(AnonCaller{}, func(v *View) error {
+			return v.Select(&got, Query{Order: []Order{{Field: "Int"}}, Distinct: true, Joins: []Join{NewJoin(&testStruct{}, All{}, []On{{"String", EQ, "String"}, {"ID", NE, "ID"}})}})
+		}))
+		if len(got) != 2 || !got[0].ID.Equal(ts1.ID) || !got[1].ID.Equal(ts2.ID) {
+			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts1, *ts2})
 		}
 	})
 }

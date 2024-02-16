@@ -8,7 +8,7 @@ import (
 )
 
 type Set interface {
-	toWhereCondition() (string, []any)
+	toWhereCondition(string) (string, []any)
 	matches(reflect.Value) (bool, error)
 	// Returns true if this set contains the value referred to by structPointer.
 	Matches(structPointer any) (bool, error)
@@ -18,10 +18,33 @@ type Set interface {
 	Includes(otherSet Set) (bool, error)
 }
 
+// None matches nothing.
+type None struct{}
+
+func (n None) toWhereCondition(_ string) (string, []any) {
+	return "1 = 0", nil
+}
+
+func (n None) matches(reflect.Value) (bool, error) {
+	return false, nil
+}
+
+func (n None) Excludes(s Set) (bool, error) {
+	return true, nil
+}
+
+func (n None) Includes(s Set) (bool, error) {
+	return false, nil
+}
+
+func (n None) Matches(structPointer any) (bool, error) {
+	return false, nil
+}
+
 // All matches everything.
 type All struct{}
 
-func (a All) toWhereCondition() (string, []any) {
+func (a All) toWhereCondition(_ string) (string, []any) {
 	return "1 = 1", nil
 }
 
@@ -313,24 +336,18 @@ func (c Cond) matches(val reflect.Value) (bool, error) {
 	return c.Comparator.apply(val.FieldByName(c.Field), reflect.ValueOf(c.Value))
 }
 
-func (c Cond) toWhereCondition() (string, []any) {
-	return fmt.Sprintf("\"%s\" %s ?", c.Field, c.Comparator), []any{c.Value}
+func (c Cond) toWhereCondition(tablePrefix string) (string, []any) {
+	return fmt.Sprintf("\"%s\".\"%s\" %s ?", tablePrefix, c.Field, c.Comparator), []any{c.Value}
 }
 
 // And defines a Set of all structs present in all contained Sets.
 type And []Set
 
-func (a And) toWhereCondition() (string, []any) {
+func (a And) toWhereCondition(tablePrefix string) (string, []any) {
 	stringParts := []string{}
 	valueParts := []any{}
 	for _, set := range a {
-		var sql string
-		var params []any
-		if set == nil {
-			sql, params = All{}.toWhereCondition()
-		} else {
-			sql, params = set.toWhereCondition()
-		}
+		sql, params := getWhereCondition(tablePrefix, set, All{})
 		stringParts = append(stringParts, fmt.Sprintf("(%s)", sql))
 		valueParts = append(valueParts, params...)
 	}
@@ -389,12 +406,12 @@ func (a And) matches(val reflect.Value) (bool, error) {
 // Or defines a Set of all structs contained in any contained Set.
 type Or []Set
 
-func (o Or) toWhereCondition() (string, []any) {
+func (o Or) toWhereCondition(tablePrefix string) (string, []any) {
 	stringParts := []string{}
 	valueParts := []any{}
 	for _, set := range o {
-		query, params := set.toWhereCondition()
-		stringParts = append(stringParts, fmt.Sprintf("(%s)", query))
+		sql, params := getWhereCondition(tablePrefix, set, None{})
+		stringParts = append(stringParts, fmt.Sprintf("(%s)", sql))
 		valueParts = append(valueParts, params...)
 	}
 	return strings.Join(stringParts, " OR "), valueParts
@@ -455,23 +472,68 @@ type Order struct {
 	Desc  bool
 }
 
+// On represents the ON part of a JOIN.
+type On struct {
+	MainField  string
+	Comparator Comparator
+	JoinField  string
+}
+
+func NewJoin(structPointer any, set Set, on []On) Join {
+	typ := reflect.TypeOf(structPointer)
+	for typ.Kind() == reflect.Ptr {
+		typ = typ.Elem()
+	}
+	return Join{typ: typ, set: set, on: on}
+}
+
+type Join struct {
+	typ reflect.Type
+	set Set
+	on  []On
+}
+
+func (j Join) toOnCondition(mainTypeName, joinTypeName string) string {
+	parts := []string{}
+	for _, on := range j.on {
+		parts = append(parts, fmt.Sprintf("\"%s\".\"%s\" %s \"%s\".\"%s\"", mainTypeName, on.MainField, on.Comparator, joinTypeName, on.JoinField))
+	}
+	return strings.Join(parts, " AND ")
+}
+
 // Query defines a Set of structs to be returned in a particular amount in a particular order.
 type Query struct {
-	Set   Set
-	Limit uint
-	Order []Order
+	Set      Set
+	Limit    uint
+	Distinct bool
+	Order    []Order
+	Joins    []Join
+}
+
+func getWhereCondition(tablePrefix string, s Set, def Set) (string, []any) {
+	if s == nil {
+		return def.toWhereCondition(tablePrefix)
+	}
+	return s.toWhereCondition(tablePrefix)
 }
 
 func (q *Query) toSelectStatement(structType reflect.Type) (string, []any) {
-	var sql string
-	var params []any
-	if q.Set == nil {
-		sql, params = All{}.toWhereCondition()
-	} else {
-		sql, params = q.Set.toWhereCondition()
-	}
 	buf := &bytes.Buffer{}
-	fmt.Fprintf(buf, "SELECT * FROM \"%s\" WHERE %s", structType.Name(), sql)
+	distinct := ""
+	if q.Distinct {
+		distinct = "DISTINCT "
+	}
+	fmt.Fprintf(buf, "SELECT %s\"%s\".* FROM \"%s\"", distinct, structType.Name(), structType.Name())
+	mainSQL, params := getWhereCondition(structType.Name(), q.Set, All{})
+	sqlParts := []string{mainSQL}
+	for joinIndex, join := range q.Joins {
+		joinName := fmt.Sprintf("j%d", joinIndex)
+		fmt.Fprintf(buf, "\nJOIN \"%s\" %s ON %s", join.typ.Name(), joinName, join.toOnCondition(structType.Name(), joinName))
+		joinSQL, joinParams := getWhereCondition(joinName, join.set, All{})
+		sqlParts = append(sqlParts, joinSQL)
+		params = append(params, joinParams...)
+	}
+	fmt.Fprintf(buf, "\nWHERE %s", strings.Join(sqlParts, " AND "))
 	if len(q.Order) > 0 {
 		orderParts := []string{}
 		for _, order := range q.Order {

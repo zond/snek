@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -67,13 +68,30 @@ func (s *Snek) View(caller Caller, f func(*View) error) error {
 	})
 }
 
-func logSQL(s *Snek, kind string, query string, params []any, err error) {
-	s.logIf(s.options.LogQuery, "%s(%q, %+v) => %v", kind, query, params, err)
+func logSQL(s *Snek, query string, params []any, err error) {
+	if !s.options.LogSQL {
+		return
+	}
+	indentedQuery := strings.Join(strings.Split(query, "\n"), "\n  ")
+	paramString := ""
+	if len(params) > 0 {
+		paramParts := []string{}
+		for _, param := range params {
+			switch v := param.(type) {
+			case string:
+				paramParts = append(paramParts, fmt.Sprintf("%q", v))
+			default:
+				paramParts = append(paramParts, fmt.Sprintf("%+v", v))
+			}
+		}
+		paramString = fmt.Sprintf("\nParameters: %s", strings.Join(paramParts, ", "))
+	}
+	s.logIf(s.options.LogSQL, "SQL => %v\n  %s%s", err, indentedQuery, paramString)
 }
 
 func (v *View) query(query string, params ...any) (*sqlx.Rows, error) {
 	rows, err := v.tx.QueryxContext(v.snek.ctx, query, params...)
-	logSQL(v.snek, "QUERY", query, params, err)
+	logSQL(v.snek, query, params, err)
 	return rows, err
 }
 
@@ -89,20 +107,20 @@ func (v *View) Select(structSlicePointer any, query Query) error {
 	}
 	sql, params := query.toSelectStatement(structType)
 	err := v.tx.SelectContext(v.snek.ctx, structSlicePointer, sql, params...)
-	logSQL(v.snek, "QUERY", sql, params, err)
+	logSQL(v.snek, sql, params, err)
 	return err
 }
 
 func (v *View) get(structPointer any, info *valueInfo) error {
 	sql, params := info.toGetStatement()
 	err := v.tx.GetContext(v.snek.ctx, structPointer, sql, params...)
-	logSQL(v.snek, "QUERY", sql, params, err)
+	logSQL(v.snek, sql, params, err)
 	return err
 }
 
 // Get populates structPointer with the data at structPointer.ID in the store.
 func (v *View) Get(structPointer any) error {
-	info, err := v.snek.getValueInfo(reflect.ValueOf(structPointer))
+	info, err := getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}
@@ -112,7 +130,7 @@ func (v *View) Get(structPointer any) error {
 	}
 	sql, params := query.toSelectStatement(info.typ)
 	err = v.tx.GetContext(v.snek.ctx, structPointer, sql, params...)
-	logSQL(v.snek, "QUERY", sql, params, err)
+	logSQL(v.snek, sql, params, err)
 	return err
 }
 
@@ -157,7 +175,7 @@ func (u *Update) loadAndAddSubscriptionsForCurrent(info *valueInfo) (any, error)
 
 // Remove removes the data at structPointer.ID.
 func (u *Update) Remove(structPointer any) error {
-	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
+	info, err := getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}
@@ -180,7 +198,7 @@ func (u *Update) Remove(structPointer any) error {
 
 // Update replaces the data at structPointer.ID with the data inside structPointer.
 func (u *Update) Update(structPointer any) error {
-	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
+	info, err := getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}
@@ -204,7 +222,7 @@ func (u *Update) Update(structPointer any) error {
 
 // Insert places the data inside structPointer at structPointer.ID.
 func (u *Update) Insert(structPointer any) error {
-	info, err := u.snek.getValueInfo(reflect.ValueOf(structPointer))
+	info, err := getValueInfo(reflect.ValueOf(structPointer))
 	if err != nil {
 		return err
 	}
@@ -223,6 +241,6 @@ func (u *Update) Insert(structPointer any) error {
 
 func (u *Update) exec(sql string, params ...any) error {
 	_, err := u.tx.ExecContext(u.snek.ctx, sql, params...)
-	logSQL(u.snek, "EXEC", sql, params, err)
+	logSQL(u.snek, sql, params, err)
 	return err
 }

@@ -14,8 +14,7 @@ type Options struct {
 	Path       string
 	RandomSeed int64
 	Logger     *log.Logger
-	LogExec    bool
-	LogQuery   bool
+	LogSQL     bool
 }
 
 // DefaultOptions returns default options with the provided path as file storage.

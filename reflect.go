@@ -160,7 +160,7 @@ func (i *valueInfo) fields() fieldInfoMap {
 	return i._fields
 }
 
-func (s *Snek) getValueInfo(val reflect.Value) (*valueInfo, error) {
+func getValueInfo(val reflect.Value) (*valueInfo, error) {
 	if val.Kind() != reflect.Ptr || val.Type().Elem().Kind() != reflect.Struct {
 		return nil, fmt.Errorf("only pointers to structs allowed, not %v", val.Interface())
 	}
