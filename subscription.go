@@ -56,6 +56,9 @@ func (s *typedSubscription[T]) push() {
 // content post any update of the store to the subscriber.
 // Once the subscriber returns an error it will be cleaned up and removed.
 func Subscribe[T any](s *Snek, caller Caller, query Query, subscriber Subscriber[T]) (Subscription, error) {
+	if len(query.Joins) > 0 {
+		return nil, fmt.Errorf("join queries can't be subscribed - notifying on updates in joins not implemented")
+	}
 	sub := &typedSubscription[T]{
 		typ:        reflect.TypeOf(*new(T)),
 		id:         s.NewID(),
