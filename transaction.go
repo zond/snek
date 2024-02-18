@@ -96,13 +96,16 @@ func (v *View) query(query string, params ...any) (*sqlx.Rows, error) {
 }
 
 // Select executs the query and puts the results in structSlicePointer.
-func (v *View) Select(structSlicePointer any, query Query) error {
+func (v *View) Select(structSlicePointer any, query *Query) error {
+	if query == nil {
+		query = &Query{}
+	}
 	typ := reflect.TypeOf(structSlicePointer)
 	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Slice || typ.Elem().Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("only pointers to slices of structs allowed, not %v", structSlicePointer)
+		return fmt.Errorf("only pointers to slices of structs allowed, not %v", typ)
 	}
 	structType := typ.Elem().Elem()
-	if err := v.queryControl(structType, &query); err != nil {
+	if err := v.queryControl(structType, query); err != nil {
 		return err
 	}
 	sql, params := query.toSelectStatement(structType)
@@ -124,7 +127,7 @@ func (v *View) Get(structPointer any) error {
 	if err != nil {
 		return err
 	}
-	query := &Query{Set: Cond{"ID", EQ, info.id}}
+	query := &Query{Set: &Cond{"ID", EQ, info.id}}
 	if err := v.queryControl(info.typ, query); err != nil {
 		return err
 	}

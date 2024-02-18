@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/zond/snek"
 	"github.com/zond/snek/server"
@@ -76,7 +77,7 @@ func updateControlMessage(u *snek.Update, prev, next *Message) error {
 			return fmt.Errorf("can only insert messages from yourself")
 		}
 		members := []Member{}
-		if err := u.Select(&members, snek.Query{Set: snek.And{snek.Cond{"UserID", snek.EQ, u.Caller().UserID()}, snek.Cond{"GroupID", snek.EQ, next.GroupID}}}); err != nil {
+		if err := u.Select(&members, &snek.Query{Set: snek.And{snek.Cond{"UserID", snek.EQ, u.Caller().UserID()}, snek.Cond{"GroupID", snek.EQ, next.GroupID}}}); err != nil {
 			return err
 		}
 		if len(members) == 0 {
@@ -121,6 +122,8 @@ func main() {
 	// Create options for a WebSocket listning at :8080, using an SQLite databas at snek.db,
 	// that simply trusts all connecting users to identify themselves correctly.
 	opts := server.DefaultOptions("0.0.0.0:8080", "snek.db", trustingIdentifier{})
+	opts.SnekOptions.Logger = log.Default()
+	opts.SnekOptions.LogSQL = os.Getenv("VERBOSE_SNEK") == "true"
 	s, err := opts.Open()
 	if err != nil {
 		log.Fatal(err)

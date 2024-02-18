@@ -32,8 +32,8 @@ func (m *Match) validate() error {
 	if m.Cond != nil {
 		nonNilFields++
 	}
-	if nonNilFields != 1 {
-		return fmt.Errorf("exactly one of the nullable fields of Match must be populated, not %+v", m)
+	if nonNilFields > 1 {
+		return fmt.Errorf("at most one of the nullable fields of Match must be populated, not %+v", m)
 	}
 	return nil
 }
@@ -60,23 +60,100 @@ func (m *Match) toSet() (snek.Set, error) {
 	case len(m.Or) > 0:
 		subSet, err := makeSubSet(m.And)
 		return snek.Or(subSet), err
+	case m.Cond != nil:
+		return m.Cond, nil
 	default:
-		return *m.Cond, nil
+		return snek.All{}, nil
 	}
 }
 
 // Sent from client to server. Represents a serializable snek.Query for a given type.
-type Subscription struct {
+type Subscribe struct {
 	TypeName string
 	Order    []snek.Order `json:",omitempy"`
-	Limit    int          `json:",omitempty"`
+	Limit    uint         `json:",omitempty"`
+	Distinct bool         `json:",omitempty"`
 	Match    Match        `json:",omitempty"`
 }
 
-// Sent by server after initial Subscription and every time the data matching set of data is modified.
+func (s *Subscribe) toQuery() (*snek.Query, error) {
+	set, err := s.Match.toSet()
+	if err != nil {
+		return nil, err
+	}
+	return &snek.Query{
+		Set:      set,
+		Limit:    s.Limit,
+		Distinct: s.Distinct,
+		Order:    s.Order,
+	}, nil
+}
+
+func (s *Subscribe) String() string {
+	return fmt.Sprint(*s)
+}
+
+var (
+	errType = reflect.TypeOf(new(error)).Elem()
+	anyType = reflect.TypeOf(new(any)).Elem()
+)
+
+func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
+	typ, found := c.server.types[s.TypeName]
+	if !found {
+		return fmt.Errorf("%q not registered", s.TypeName)
+	}
+	query, err := s.toQuery()
+	if err != nil {
+		return err
+	}
+	subscriptionFunc := reflect.MakeFunc(reflect.FuncOf([]reflect.Type{anyType, errType}, []reflect.Type{errType}, false), func(args []reflect.Value) []reflect.Value {
+		var err error
+		switch v := args[1].Interface().(type) {
+		case error:
+			err = v
+		}
+		fmt.Println("got sub, err is", err)
+		var b []byte
+		if err == nil {
+			fmt.Println("and data is", args[0].Interface())
+			b, err = json.Marshal(args[0].Interface())
+		}
+		errString := ""
+		if err != nil {
+			errString = err.Error()
+		}
+		msg := &Message{
+			ID: c.server.snek.NewID(),
+			Data: &Data{
+				CauseMessageID: causeMessageID,
+				Error:          errString,
+				Blob:           b,
+			},
+		}
+		return []reflect.Value{reflect.ValueOf(c.send(msg))}
+	})
+	subscription, err := snek.Subscribe(c.server.snek, c.caller.Get(), query, snek.AnySubscriber(typ, subscriptionFunc.Interface().(func(any, error) error)))
+	if err != nil {
+		return err
+	}
+	idString := string(causeMessageID)
+	if sub, found := c.subscriptions[idString]; found {
+		sub.Close()
+	}
+	c.subscriptions[idString] = subscription
+	return nil
+}
+
+// Sent by server after initial Subscribe and every time the data matching set of data is modified.
 type Data struct {
-	CauseMessageID []byte
-	Blob           []byte
+	CauseMessageID snek.ID
+	Error          string `json:",omitempty"`
+	Blob           []byte `json:",omitempty"`
+}
+
+func (d *Data) String() string {
+	return fmt.Sprint(*d)
 }
 
 // Sent from client to server.
@@ -85,6 +162,10 @@ type Update struct {
 	Insert   []byte
 	Update   []byte
 	Remove   []byte
+}
+
+func (u *Update) String() string {
+	return fmt.Sprint(*u)
 }
 
 type updateOp string
@@ -125,22 +206,26 @@ func (u *Update) execute(c *client) error {
 	if err := json.Unmarshal(b, instance); err != nil {
 		return err
 	}
-	return c.server.snek.Update(c.caller.Get(), func(u *snek.Update) error {
+	return c.server.snek.Update(c.caller.Get(), func(upd *snek.Update) error {
 		switch op {
 		case insert:
-			return u.Insert(instance)
+			return upd.Insert(instance)
 		case update:
-			return u.Insert(instance)
+			return upd.Update(instance)
 		default:
-			return u.Insert(instance)
+			return upd.Remove(instance)
 		}
 	})
 }
 
-// Sent from server as response to Update and Subscription.
+// Sent from server as response to every message from the client.
 type Result struct {
-	CauseMessageID []byte
-	Error          *string
+	CauseMessageID snek.ID
+	Error          string `json:",omitempty"`
+}
+
+func (r *Result) String() string {
+	return fmt.Sprint(*r)
 }
 
 // Sent from client to server to attain a caller identity.
@@ -148,14 +233,32 @@ type Identity struct {
 	Token []byte
 }
 
+func (i *Identity) String() string {
+	return fmt.Sprint(*i)
+}
+
+// Sent from client to server to cancel the subscription whose Response message had the ID defined by SubscriptionID.
+type Unsubscribe struct {
+	SubscriptionID snek.ID
+}
+
+func (u *Unsubscribe) String() string {
+	return fmt.Sprint(*u)
+}
+
 // Sent in both directions.
 type Message struct {
-	ID           snek.ID
-	Subscription *Subscription `json:",omitempty"`
-	Data         *Data         `json:",omitempty"`
-	Update       *Update       `json:",omitempty"`
-	Result       *Result       `json:",omitempty"`
-	Identity     *Identity     `json:",omitempty"`
+	ID snek.ID
+
+	// From client to server.
+	Subscribe   *Subscribe   `json:",omitempty"`
+	Unsubscribe *Unsubscribe `json:",omitempty"`
+	Update      *Update      `json:",omitempty"`
+	Identity    *Identity    `json:",omitempty"`
+
+	// From server to client.
+	Data   *Data   `json:",omitempty"`
+	Result *Result `json:",omitempty"`
 }
 
 func (c *client) response(m *Message, err error) *Message {
@@ -167,15 +270,17 @@ func (c *client) response(m *Message, err error) *Message {
 		errMessage.Result.CauseMessageID = m.ID
 	}
 	if err != nil {
-		errString := err.Error()
-		errMessage.Result.Error = &errString
+		errMessage.Result.Error = err.Error()
 	}
 	return errMessage
 }
 
 func (m *Message) validate() error {
 	nonNilFields := 0
-	if m.Subscription != nil {
+	if m.Subscribe != nil {
+		nonNilFields++
+	}
+	if m.Unsubscribe != nil {
 		nonNilFields++
 	}
 	if m.Data != nil {
@@ -197,11 +302,12 @@ func (m *Message) validate() error {
 }
 
 type client struct {
-	server *Server
-	conn   *websocket.Conn
-	lock   synch.Lock
-	caller *synch.S[snek.Caller]
-	closed int32
+	server        *Server
+	conn          *websocket.Conn
+	lock          synch.Lock
+	caller        *synch.S[snek.Caller]
+	closed        int32
+	subscriptions map[string]snek.Subscription
 }
 
 func (c *client) readLoop() {
@@ -218,7 +324,7 @@ func (c *client) readLoop() {
 			go func() {
 				message := &Message{}
 				if err := json.Unmarshal(b, message); err != nil {
-					c.send(c.response(nil, err))
+					c.send(c.response(nil, fmt.Errorf("unable to parse message: %v", err)))
 					return
 				}
 				if err := message.validate(); err != nil {
@@ -228,8 +334,17 @@ func (c *client) readLoop() {
 				log.Printf("received message %+v", message)
 
 				switch {
-				case message.Subscription != nil:
-					log.Printf("received subscription %+v", message.Subscription)
+				case message.Subscribe != nil:
+					c.send(c.response(message, message.Subscribe.execute(c, message.ID)))
+				case message.Unsubscribe != nil:
+					stringID := string(message.Unsubscribe.SubscriptionID)
+					if sub, found := c.subscriptions[stringID]; found {
+						sub.Close()
+						delete(c.subscriptions, stringID)
+						c.send(c.response(message, nil))
+					} else {
+						c.send(c.response(message, fmt.Errorf("subscription %v not found", message.Unsubscribe.SubscriptionID)))
+					}
 				case message.Update != nil:
 					c.send(c.response(message, message.Update.execute(c)))
 				case message.Identity != nil:
@@ -241,6 +356,8 @@ func (c *client) readLoop() {
 						c.caller.Set(caller)
 						c.send(c.response(message, nil))
 					}
+				default:
+					log.Printf("received unexpected message %+v", message)
 				}
 			}()
 		}
@@ -310,24 +427,26 @@ type Identifier interface {
 
 // Options contains server configuration.
 type Options struct {
-	Path       string
-	Addr       string
-	Snek       *snek.Snek
-	WriteWait  time.Duration
-	PongWait   time.Duration
-	PingPeriod time.Duration
-	Identifier Identifier
+	Path        string
+	Addr        string
+	SnekOptions snek.Options
+	WriteWait   time.Duration
+	PongWait    time.Duration
+	PingPeriod  time.Duration
+	Identifier  Identifier
 }
 
 // DefaultOptions returns default options for the given interface address, database path, and identifier.
 func DefaultOptions(addr string, path string, identifier Identifier) Options {
+	snekOpts := snek.DefaultOptions(path)
 	return Options{
-		Addr:       addr,
-		Path:       path,
-		WriteWait:  10 * time.Second,
-		PongWait:   60 * time.Second,
-		PingPeriod: 50 * time.Second,
-		Identifier: identifier,
+		SnekOptions: snekOpts,
+		Addr:        addr,
+		Path:        path,
+		WriteWait:   10 * time.Second,
+		PongWait:    60 * time.Second,
+		PingPeriod:  50 * time.Second,
+		Identifier:  identifier,
 	}
 }
 
@@ -340,7 +459,7 @@ type Server struct {
 
 // Open returns a server using the provided options.
 func (o Options) Open() (*Server, error) {
-	s, err := snek.DefaultOptions(o.Path).Open()
+	s, err := o.SnekOptions.Open()
 	if err != nil {
 		return nil, err
 	}
@@ -375,9 +494,10 @@ func (s *Server) Run() error {
 			return
 		}
 		c := &client{
-			conn:   conn,
-			server: s,
-			caller: synch.New[snek.Caller](nil),
+			conn:          conn,
+			server:        s,
+			subscriptions: map[string]snek.Subscription{},
+			caller:        synch.New[snek.Caller](snek.AnonCaller{}),
 		}
 		go c.pingLoop()
 		go c.readLoop()

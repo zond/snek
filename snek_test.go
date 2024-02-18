@@ -156,24 +156,24 @@ func TestInsertGetUpdateRemove(t *testing.T) {
 		}))
 		s.must(Register(s.Snek, ts, UncontrolledQueries, UncontrolledUpdates(ts)))
 		matchingString := make(chan []testStruct)
-		s.mustAny(Subscribe(s.Snek, AnonCaller{}, Query{Set: Cond{"String", EQ, "string"}}, func(res []testStruct, err error) error {
+		s.mustAny(Subscribe(s.Snek, AnonCaller{}, &Query{Set: Cond{"String", EQ, "string"}}, TypedSubscriber(func(res []testStruct, err error) error {
 			if err != nil {
 				t.Fatal(err)
 			}
 			matchingString <- res
 			return nil
-		}))
+		})))
 		if got := <-matchingString; len(got) > 0 {
 			t.Errorf("wanted no results, got %+v", got)
 		}
 		matchingAnotherString := make(chan []testStruct)
-		anotherStringSubscription, err := Subscribe(s.Snek, AnonCaller{}, Query{Set: Cond{"String", EQ, "another string"}}, func(res []testStruct, err error) error {
+		anotherStringSubscription, err := Subscribe(s.Snek, AnonCaller{}, &Query{Set: Cond{"String", EQ, "another string"}}, TypedSubscriber(func(res []testStruct, err error) error {
 			if err != nil {
 				t.Fatal(err)
 			}
 			matchingAnotherString <- res
 			return nil
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -255,39 +255,39 @@ func TestSelect(t *testing.T) {
 		}))
 		s.must(s.View(AnonCaller{}, func(v *View) error {
 			res := []testStruct{}
-			s.must(v.Select(&res, Query{Set: Or{
+			s.must(v.Select(&res, &Query{Set: Or{
 				Cond{"String", EQ, "string1"},
 				Cond{"String", EQ, "string2"}}}))
 			mustContain(t, res, []ID{ts1.ID, ts2.ID})
-			s.must(v.Select(&res, Query{Set: And{
+			s.must(v.Select(&res, &Query{Set: And{
 				Cond{"String", EQ, "string1"},
 				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{})
-			s.must(v.Select(&res, Query{Set: And{
+			s.must(v.Select(&res, &Query{Set: And{
 				Or{
 					Cond{"String", EQ, "string1"},
 					Cond{"String", EQ, "string2"}},
 				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{ts2.ID})
-			s.must(v.Select(&res, Query{Set: Or{
+			s.must(v.Select(&res, &Query{Set: Or{
 				And{
 					Cond{"String", EQ, "string1"},
 					Cond{"Int", EQ, 2}},
 				Cond{"Int", EQ, 2}}}))
 			mustContain(t, res, []ID{ts2.ID})
-			s.must(v.Select(&res, Query{Set: Cond{"Int", GT, 0}}))
+			s.must(v.Select(&res, &Query{Set: Cond{"Int", GT, 0}}))
 			mustContain(t, res, []ID{ts1.ID, ts2.ID, ts3.ID, ts4.ID})
-			s.must(v.Select(&res, Query{
+			s.must(v.Select(&res, &Query{
 				Limit: 2,
 				Order: []Order{{"Int", true}},
 				Set:   Cond{"Int", GT, 0}}))
 			mustList(t, res, []ID{ts4.ID, ts3.ID})
-			s.must(v.Select(&res, Query{
+			s.must(v.Select(&res, &Query{
 				Limit: 2,
 				Order: []Order{{"Int", false}},
 				Set:   Cond{"Int", GT, 0}}))
 			mustList(t, res, []ID{ts1.ID, ts2.ID})
-			s.must(v.Select(&res, Query{
+			s.must(v.Select(&res, &Query{
 				Limit: 2,
 				Order: []Order{{"Inner.Float", true}, {"Int", false}},
 				Set:   Cond{"Int", LE, 3}}))
@@ -601,13 +601,13 @@ func TestModifyingPermissions(t *testing.T) {
 		}))
 		found := []testStruct{}
 		s.must(s.View(AnonCaller{}, func(v *View) error {
-			return v.Select(&found, Query{})
+			return v.Select(&found, &Query{})
 		}))
 		if len(found) != 0 {
 			t.Errorf("got %+v, wanted no matches", found)
 		}
 		s.must(s.View(adminCaller, func(v *View) error {
-			return v.Select(&found, Query{})
+			return v.Select(&found, &Query{})
 		}))
 		if len(found) != 1 || !found[0].ID.Equal(ts.ID) || found[0].String != "unapproved" {
 			t.Errorf("got %+v, wanted %+v", found, []testStruct{*ts})
@@ -617,7 +617,7 @@ func TestModifyingPermissions(t *testing.T) {
 			return u.Update(ts)
 		}))
 		s.must(s.View(AnonCaller{}, func(v *View) error {
-			return v.Select(&found, Query{})
+			return v.Select(&found, &Query{})
 		}))
 		if len(found) != 1 || !found[0].ID.Equal(ts.ID) {
 			t.Errorf("got %+v, wanted %+v", found, []testStruct{*ts})
@@ -641,13 +641,13 @@ func TestSubscriptionHash(t *testing.T) {
 			return u.Insert(ts3)
 		}))
 		inc := make(chan []testStruct)
-		s.mustAny(Subscribe(s.Snek, AnonCaller{}, Query{Limit: 1, Order: []Order{{Field: "Int"}}}, func(res []testStruct, err error) error {
+		s.mustAny(Subscribe(s.Snek, AnonCaller{}, &Query{Limit: 1, Order: []Order{{Field: "Int"}}}, TypedSubscriber(func(res []testStruct, err error) error {
 			if err != nil {
 				t.Fatal(err)
 			}
 			inc <- res
 			return nil
-		}))
+		})))
 		if got := <-inc; len(got) != 1 || !got[0].ID.Equal(ts1.ID) {
 			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts1})
 		}
@@ -676,19 +676,19 @@ func TestJoin(t *testing.T) {
 		}))
 		got := []testStruct{}
 		s.must(s.View(AnonCaller{}, func(v *View) error {
-			return v.Select(&got, Query{Set: Cond{"Int", LT, 9}, Joins: []Join{NewJoin(&testStruct{}, Cond{"Int", EQ, 9}, []On{{"String", EQ, "String"}})}})
+			return v.Select(&got, &Query{Set: Cond{"Int", LT, 9}, Joins: []Join{NewJoin(&testStruct{}, Cond{"Int", EQ, 9}, []On{{"String", EQ, "String"}})}})
 		}))
 		if len(got) != 1 || !got[0].ID.Equal(ts1.ID) {
 			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts1})
 		}
 		s.must(s.View(AnonCaller{}, func(v *View) error {
-			return v.Select(&got, Query{Set: Cond{"Int", LT, 9}, Joins: []Join{NewJoin(&testStruct{}, Cond{"Int", EQ, 11}, []On{{"String", EQ, "String"}})}})
+			return v.Select(&got, &Query{Set: Cond{"Int", LT, 9}, Joins: []Join{NewJoin(&testStruct{}, Cond{"Int", EQ, 11}, []On{{"String", EQ, "String"}})}})
 		}))
 		if len(got) != 0 {
 			t.Errorf("got %+v, wanted no results", got)
 		}
 		s.must(s.View(AnonCaller{}, func(v *View) error {
-			return v.Select(&got, Query{Order: []Order{{Field: "Int"}}, Distinct: true, Joins: []Join{NewJoin(&testStruct{}, All{}, []On{{"String", EQ, "String"}, {"ID", NE, "ID"}})}})
+			return v.Select(&got, &Query{Order: []Order{{Field: "Int"}}, Distinct: true, Joins: []Join{NewJoin(&testStruct{}, All{}, []On{{"String", EQ, "String"}, {"ID", NE, "ID"}})}})
 		}))
 		if len(got) != 2 || !got[0].ID.Equal(ts1.ID) || !got[1].ID.Equal(ts2.ID) {
 			t.Errorf("got %+v, wanted %+v", got, []testStruct{*ts1, *ts2})

@@ -7,98 +7,161 @@ import (
 	"reflect"
 
 	"github.com/minio/highwayhash"
+	"github.com/zond/snek/synch"
 )
 
 var (
 	highwayHashKey = []byte("01234567801234567899012345678901")
 )
 
-// Subscriber handles results from subscriptions.
-type Subscriber[T any] func([]T, error) error
-
-type typedSubscription[T any] struct {
-	typ          reflect.Type
-	id           ID
-	query        Query
-	snek         *Snek
-	subscriber   Subscriber[T]
-	caller       Caller
-	lastPushHash [highwayhash.Size]byte
+// Subscriber handles data from subscriptions.
+// Create subscribers by calling TypedSubscriber or AnySubscriber.
+type Subscriber interface {
+	handleResults(structSlicePointer any, err error) error
+	prepareResult() (structSlicePointer any)
+	getType() (structType reflect.Type)
 }
 
-func (s *typedSubscription[T]) Close() error {
-	_, found := s.snek.getSubscriptions(s.typ).Del(string(s.id))
+type typedSubscriber[T any] struct {
+	handler    func([]T, error) error
+	structType reflect.Type
+}
+
+func (s *typedSubscriber[T]) handleResults(structSlicePointer any, err error) error {
+	return s.handler(*(structSlicePointer.(*[]T)), err)
+}
+
+func (s *typedSubscriber[T]) prepareResult() any {
+	res := []T{}
+	return &res
+}
+
+func (s *typedSubscriber[T]) getType() reflect.Type {
+	return s.structType
+}
+
+type anySubscriber struct {
+	handler    func(structSlice any, err error) error
+	structType reflect.Type
+	sliceType  reflect.Type
+}
+
+func (a *anySubscriber) handleResults(structSlicePointer any, err error) error {
+	return a.handler(reflect.ValueOf(structSlicePointer).Elem().Interface(), err)
+}
+
+func (a *anySubscriber) prepareResult() any {
+	return reflect.New(a.sliceType).Interface()
+}
+
+func (a *anySubscriber) getType() reflect.Type {
+	return a.structType
+}
+
+// AnySubscriber returns a subscriber handling untyped results. The results are still slices of structs.
+func AnySubscriber(structType reflect.Type, handler func(structSlice any, err error) error) Subscriber {
+	return &anySubscriber{
+		handler:    handler,
+		structType: structType,
+		sliceType:  reflect.SliceOf(structType),
+	}
+}
+
+// TypedSubscriber returns a subscriber handling typed results, which might be more convenient.
+func TypedSubscriber[T any](handler func([]T, error) error) Subscriber {
+	return &typedSubscriber[T]{
+		handler:    handler,
+		structType: reflect.TypeOf(*new(T)),
+	}
+}
+
+type subscription struct {
+	id           ID
+	query        *Query
+	snek         *Snek
+	subscriber   Subscriber
+	caller       Caller
+	lastPushHash [highwayhash.Size]byte
+	lock         synch.Lock
+}
+
+func (s *subscription) Close() error {
+	_, found := s.snek.getSubscriptions(s.subscriber.getType()).Del(string(s.id))
 	if !found {
 		return fmt.Errorf("not open")
 	}
 	return nil
 }
 
-func (s *typedSubscription[T]) matches(val reflect.Value) bool {
-	if s.typ != val.Type() {
+func (s *subscription) matches(val reflect.Value) bool {
+	if s.subscriber.getType() != val.Type() {
 		return false
 	}
 	matches, err := s.query.Set.matches(val)
 	if err != nil {
-		query, _ := s.query.Set.toWhereCondition(s.typ.Name())
+		query, _ := s.query.Set.toWhereCondition(s.subscriber.getType().Name())
 		log.Printf("while matching %+v to %q: %v", val.Interface(), query, err)
 		return false
 	}
 	return matches
 }
 
-func (s *typedSubscription[T]) load() ([]T, bool, error) {
-	results := []T{}
+func (s *subscription) load() (any, [highwayhash.Size]byte, error) {
+	results := s.subscriber.prepareResult()
 	err := s.snek.View(s.caller, func(v *View) error {
-		return v.Select(&results, s.query)
+		return v.Select(results, s.query)
 	})
+	var emptyHash [highwayhash.Size]byte
 	if err != nil {
-		return nil, true, err
+		return nil, emptyHash, err
 	}
 	b, err := json.Marshal(results)
 	if err != nil {
-		return nil, true, err
+		return nil, emptyHash, err
 	}
 	hash := highwayhash.Sum(b, highwayHashKey)
-	changed := hash != s.lastPushHash
-	s.lastPushHash = hash
-	return results, changed, nil
+	return results, hash, nil
 }
 
-func (s *typedSubscription[T]) push() {
-	results, changed, loadErr := s.load()
-	if changed {
-		pushErr := s.subscriber(results, loadErr)
-		if pushErr != nil {
-			subs := s.snek.getSubscriptions(s.typ)
-			subs.Del(string(s.id))
+func (s *subscription) push() {
+	// It might seem crazy to hold a lock through not one but _two_ I/O operations (load from DB and send to a likely WebSocket),
+	// but since this is unique per subscription it's fine - no client is really interested in multiple parallel deliveries of
+	// data from the same subscription anyway.
+	s.lock.Sync(func() error {
+		results, hash, loadErr := s.load()
+		if hash != s.lastPushHash {
+			pushErr := s.subscriber.handleResults(results, loadErr)
+			if pushErr != nil {
+				subs := s.snek.getSubscriptions(s.subscriber.getType())
+				subs.Del(string(s.id))
+			} else {
+				s.lastPushHash = hash
+			}
 		}
-	}
+		return nil
+	})
 }
 
 // Subscribe creates a subscription of the data in the store matching
 // the query, and asynchronously sends the current content and the
 // content post any update of the store to the subscriber.
-// Once the subscriber returns an error it will be cleaned up and removed.
-func Subscribe[T any](s *Snek, caller Caller, query Query, subscriber Subscriber[T]) (Subscription, error) {
+// If the subscriber returns an error it will be cleaned up and removed.
+func Subscribe(s *Snek, caller Caller, query *Query, subscriber Subscriber) (Subscription, error) {
 	if len(query.Joins) > 0 {
 		return nil, fmt.Errorf("join queries can't be subscribed - notifying on updates in joins not implemented")
 	}
 	if query.Set == nil {
 		query.Set = All{}
 	}
-	sub := &typedSubscription[T]{
-		typ:        reflect.TypeOf(*new(T)),
+	sub := &subscription{
 		id:         s.NewID(),
 		snek:       s,
 		query:      query,
 		subscriber: subscriber,
 		caller:     caller,
 	}
-	subs := s.getSubscriptions(sub.typ)
-	if _, found := subs.Set(string(sub.id), sub); found {
-		return nil, fmt.Errorf("found previous subscription with new subscription ID %+v. This should never happen.", sub.id)
-	}
+	subs := s.getSubscriptions(sub.subscriber.getType())
+	subs.Set(string(sub.id), sub)
 	go func() {
 		sub.push()
 	}()
