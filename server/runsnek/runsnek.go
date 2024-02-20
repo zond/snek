@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/zond/snek"
@@ -128,6 +129,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	s.Mux().HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, html)
+	})
 	// Register the Member and Message types, along with the control methods to gatekeep them.
 	if err := server.Register(s, &Member{}, queryControlMember, updateControlMember); err != nil {
 		log.Fatal(err)
@@ -141,3 +145,62 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+var html = `<html>
+<head>
+<title>snek demo</title>
+<script>
+document.addEventListener('DOMContentLoaded', (ev) => {
+  const newID = () => {
+    const res = new Uint8Array(32);
+	window.crypto.getRandomValues(res);
+    const now = Date.now();
+    res[0] = now >> 24;
+    res[1] = (now >> 16) & 0xff;
+    res[2] = (now >> 8) & 0xff;
+    res[3] = now & 0xff;
+	return btoa(String.fromCharCode.apply(null, res));
+  };
+  const log = (text) => {
+    const div = document.createElement('div');
+    const textNode = document.createTextNode(new Date() + ' ' + text);
+	div.appendChild(textNode)
+    document.getElementById('log').appendChild(div);
+  };
+  const socket = new WebSocket('ws://localhost:8080/ws');
+  socket.addEventListener('open', (ev) => {
+    log('socket opened');
+    socket.addEventListener('message', (event) => {
+      log('message received: ' + event.data);
+    });
+    const send = (msg) => {
+      msg.ID = newID();
+  	  const json = JSON.stringify(msg);
+  	  log('sending ' + json);
+  	  socket.send(json);
+    };
+    const identityField = document.getElementById('identity');
+    identityField.addEventListener('change', (event) => {
+	  const userID = btoa(identifyField.value);
+      send({Identity: {Token: userID}});
+	  //send({Subscribe: {TypeName: 'Member', Match: {Cond: {Field: 'UserID', Comparator: '==', Value: userID}}}});
+    });
+  });
+});
+</script>
+<style>
+#log {
+  font-size: x-small;
+  overflow: auto;
+  height: 10em;
+  border: 1px solid grey;
+}
+</style>
+</head>
+<body>
+<h1>snek demo</h1>
+<div id='log'></div>
+<input type='text' id='identity' placeholder='identity' />
+</body>
+</html>
+`

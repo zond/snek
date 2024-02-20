@@ -352,7 +352,7 @@ func (c *client) readLoop() {
 					if err != nil {
 						c.send(c.response(message, err))
 					} else {
-						log.Printf("caller identified as %+v", caller)
+						log.Printf("caller identified as %+v, %s", caller, string(caller.UserID()))
 						c.caller.Set(caller)
 						c.send(c.response(message, nil))
 					}
@@ -452,9 +452,11 @@ func DefaultOptions(addr string, path string, identifier Identifier) Options {
 
 // Server serves websockets to a snek database.
 type Server struct {
-	snek  *snek.Snek
-	opts  Options
-	types map[string]reflect.Type
+	snek       *snek.Snek
+	opts       Options
+	types      map[string]reflect.Type
+	mux        *http.ServeMux
+	httpServer *http.Server
 }
 
 // Open returns a server using the provided options.
@@ -463,11 +465,41 @@ func (o Options) Open() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
+	result := &Server{
 		opts:  o,
 		snek:  s,
 		types: map[string]reflect.Type{},
-	}, nil
+		mux:   http.NewServeMux(),
+	}
+	result.httpServer = &http.Server{
+		Addr:    o.Addr,
+		Handler: result.mux,
+	}
+	upgrader := websocket.Upgrader{
+		EnableCompression: true,
+	}
+	result.mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("while upgrading %+v, %+v: %v", w, r, err)
+			return
+		}
+		c := &client{
+			conn:          conn,
+			server:        result,
+			subscriptions: map[string]snek.Subscription{},
+			caller:        synch.New[snek.Caller](snek.AnonCaller{}),
+		}
+		go c.pingLoop()
+		go c.readLoop()
+		log.Printf("%v connected", conn.RemoteAddr())
+	})
+	return result, nil
+}
+
+// Mux returns the mux for this server.
+func (s *Server) Mux() *http.ServeMux {
+	return s.mux
 }
 
 // Register registers the type of the example structPointer in the server and store and ensures there is a table for the type.
@@ -483,29 +515,5 @@ func Register[T any](s *Server, structPointer *T, queryControl snek.QueryControl
 
 // Run starts the server.
 func (s *Server) Run() error {
-	upgrader := websocket.Upgrader{
-		EnableCompression: true,
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Printf("while upgrading %+v, %+v: %v", w, r, err)
-			return
-		}
-		c := &client{
-			conn:          conn,
-			server:        s,
-			subscriptions: map[string]snek.Subscription{},
-			caller:        synch.New[snek.Caller](snek.AnonCaller{}),
-		}
-		go c.pingLoop()
-		go c.readLoop()
-		log.Printf("%v connected", conn.RemoteAddr())
-	})
-	httpServer := &http.Server{
-		Addr:    s.opts.Addr,
-		Handler: mux,
-	}
-	return httpServer.ListenAndServe()
+	return s.httpServer.ListenAndServe()
 }
