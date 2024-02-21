@@ -51,7 +51,9 @@ func (a *anySubscriber) handleResults(structSlicePointer any, err error) error {
 }
 
 func (a *anySubscriber) prepareResult() any {
-	return reflect.New(a.sliceType).Interface()
+	slicePointer := reflect.New(a.sliceType)
+	slicePointer.Elem().Set(reflect.MakeSlice(a.sliceType, 0, 0))
+	return slicePointer.Interface()
 }
 
 func (a *anySubscriber) getType() reflect.Type {
@@ -159,6 +161,11 @@ func Subscribe(s *Snek, caller Caller, query *Query, subscriber Subscriber) (Sub
 		query:      query,
 		subscriber: subscriber,
 		caller:     caller,
+	}
+	if err := s.View(caller, func(v *View) error {
+		return v.queryControl(sub.subscriber.getType(), query)
+	}); err != nil {
+		return nil, err
 	}
 	subs := s.getSubscriptions(sub.subscriber.getType())
 	subs.Set(string(sub.id), sub)

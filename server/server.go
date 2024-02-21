@@ -113,10 +113,8 @@ func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
 		case error:
 			err = v
 		}
-		fmt.Println("got sub, err is", err)
-		var b []byte
+		b := []byte{}
 		if err == nil {
-			fmt.Println("and data is", args[0].Interface())
 			b, err = json.Marshal(args[0].Interface())
 		}
 		errString := ""
@@ -131,7 +129,10 @@ func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
 				Blob:           b,
 			},
 		}
-		return []reflect.Value{reflect.ValueOf(c.send(msg))}
+		if err := c.send(msg); err != nil {
+			return []reflect.Value{reflect.ValueOf(err)}
+		}
+		return []reflect.Value{reflect.Zero(reflect.TypeOf((*error)(nil)).Elem())}
 	})
 	subscription, err := snek.Subscribe(c.server.snek, c.caller.Get(), query, snek.AnySubscriber(typ, subscriptionFunc.Interface().(func(any, error) error)))
 	if err != nil {
@@ -352,7 +353,7 @@ func (c *client) readLoop() {
 					if err != nil {
 						c.send(c.response(message, err))
 					} else {
-						log.Printf("caller identified as %+v, %s", caller, string(caller.UserID()))
+						log.Printf("caller identified as %+v", caller)
 						c.caller.Set(caller)
 						c.send(c.response(message, nil))
 					}

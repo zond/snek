@@ -474,6 +474,20 @@ func TestSetExcludes(t *testing.T) {
 
 		s.mustTrue(Or{Cond{"A", GT, 5}, Cond{"B", GT, 5}}.Excludes(And{Cond{"A", LT, 5}, Cond{"B", LT, 5}}))
 		s.mustFalse(Or{Cond{"A", GT, 5}, Cond{"B", GT, 5}}.Excludes(Or{Cond{"A", LT, 5}, Cond{"B", LT, 5}}))
+
+		s.mustTrue(Cond{"OwnerID", EQ, 1}.Excludes(None{}))
+		s.mustFalse(Cond{"OwnerID", EQ, 1}.Excludes(All{}))
+
+		s.mustTrue(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Excludes(Cond{"A", EQ, 2}))
+		s.mustTrue(Cond{"A", EQ, 2}.Excludes(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+		s.mustFalse(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Excludes(Cond{"A", EQ, 1}))
+		s.mustFalse(Cond{"A", EQ, 1}.Excludes(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+
+		s.mustFalse(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Excludes(Cond{"A", EQ, 2}))
+		s.mustFalse(Cond{"A", EQ, 2}.Excludes(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+		s.mustTrue(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Excludes(And{Cond{"A", EQ, 2}, Cond{"B", EQ, 2}}))
+		// Known false negative.
+		s.mustFalse(And{Cond{"A", EQ, 2}, Cond{"B", EQ, 2}}.Excludes(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
 	})
 }
 
@@ -522,6 +536,23 @@ func TestSetIncludes(t *testing.T) {
 
 		s.mustTrue(And{Cond{"A", LT, 10}, Cond{"A", GT, 4}}.Includes(And{Cond{"A", GT, 6}, Cond{"A", LT, 9}}))
 		s.mustFalse(And{Cond{"A", LT, 10}, Cond{"A", GT, 4}}.Includes(Or{Cond{"A", GT, 6}, Cond{"A", LT, 9}}))
+
+		s.mustFalse(Cond{"OwnerID", EQ, 1}.Includes(All{}))
+		s.mustTrue(Cond{"OwnerID", EQ, 1}.Includes(None{}))
+
+		s.mustFalse(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(Cond{"A", EQ, 1}))
+		s.mustTrue(Cond{"A", EQ, 1}.Includes(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+
+		s.mustTrue(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(Cond{"A", EQ, 1}))
+		s.mustFalse(Cond{"A", EQ, 1}.Includes(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+
+		s.mustTrue(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+		s.mustFalse(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(And{Cond{"A", EQ, 2}, Cond{"B", EQ, 2}}))
+		s.mustFalse(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(Or{Cond{"A", EQ, 2}, Cond{"B", EQ, 2}}))
+		// Known false negative.
+		s.mustFalse(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+		s.mustFalse(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(Or{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}))
+		s.mustFalse(And{Cond{"A", EQ, 1}, Cond{"B", EQ, 1}}.Includes(And{Cond{"A", EQ, 2}, Cond{"B", EQ, 1}}))
 	})
 }
 

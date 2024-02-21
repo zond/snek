@@ -13,6 +13,34 @@ import (
 	"github.com/zond/snek/server"
 )
 
+// Group defines group of members.
+type Group struct {
+	ID      snek.ID
+	OwnerID snek.ID
+}
+
+// queryControlGroup gatekeeps view access to Group instances.
+func queryControlGroup(v *snek.View, query *snek.Query) error {
+	return snek.SetIncludes(snek.Cond{"OwnerID", snek.EQ, v.Caller().UserID()}, query.Set)
+}
+
+// updateControlGroup gatekeeps update access to Group instances.
+func updateControlGroup(u *snek.Update, prev, next *Group) error {
+	if prev == nil && next != nil {
+		if !next.OwnerID.Equal(u.Caller().UserID()) {
+			return fmt.Errorf("can only insert your own groups")
+		}
+		return nil
+	} else if prev != nil && next == nil {
+		if !prev.OwnerID.Equal(u.Caller().UserID()) {
+			return fmt.Errorf("can only remove your own groups")
+		}
+		return nil
+	} else {
+		return fmt.Errorf("can't update groups")
+	}
+}
+
 // Member defines memberships in chat groups.
 type Member struct {
 	ID      snek.ID
@@ -21,32 +49,17 @@ type Member struct {
 }
 
 // queryControlMember gatekeeps view access to Member instances.
-// This method only blocks users from loading memberships of other users.
 func queryControlMember(v *snek.View, query *snek.Query) error {
-	isOK, err := snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}.Includes(query.Set)
-	if err != nil {
-		return err
-	}
-	if !isOK {
-		return fmt.Errorf("can only query your own memberships")
-	}
+	query.Joins = append(query.Joins, snek.NewJoin(&Member{}, snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}, []snek.On{{"GroupID", snek.EQ, "GroupID"}}))
 	return nil
 }
 
 // updateControlMember gatekeeps update access to Member instances.
-// This method blocks users from updating memberships, or create/remove
-// memberships for other users.
 func updateControlMember(u *snek.Update, prev, next *Member) error {
 	if prev == nil && next != nil {
-		if !next.UserID.Equal(u.Caller().UserID()) {
-			return fmt.Errorf("can only create your own memberships")
-		}
-		return nil
+		return snek.QueryHasResults(u.View, []Group{}, &snek.Query{Set: snek.And{snek.Cond{"ID", snek.EQ, next.GroupID}, snek.Cond{"OwnerID", snek.EQ, u.Caller().UserID()}}})
 	} else if prev != nil && next == nil {
-		if !prev.UserID.Equal(u.Caller().UserID()) {
-			return fmt.Errorf("can only remove your own memberships")
-		}
-		return nil
+		return snek.QueryHasResults(u.View, []Group{}, &snek.Query{Set: snek.And{snek.Cond{"ID", snek.EQ, prev.GroupID}, snek.Cond{"OwnerID", snek.EQ, u.Caller().UserID()}}})
 	} else {
 		return fmt.Errorf("can't update memberships")
 	}
@@ -61,30 +74,18 @@ type Message struct {
 }
 
 // queryControlMessage gatekeeps view access to Message instances.
-// This method appends a JOIN to the query that ensures only the
-// users own memberships are returned.
 func queryControlMessage(v *snek.View, query *snek.Query) error {
 	query.Joins = append(query.Joins, snek.NewJoin(&Member{}, snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}, []snek.On{{"GroupID", snek.EQ, "GroupID"}}))
 	return nil
 }
 
 // updateControlMessage gatekeeps update access to Message instances.
-// This method blocks update or removal of messages, and ensures that
-// any inserted message is from the user, and that there is a membership
-// of the user in the group of the message.
 func updateControlMessage(u *snek.Update, prev, next *Message) error {
 	if prev == nil && next != nil {
 		if !next.Sender.Equal(u.Caller().UserID()) {
 			return fmt.Errorf("can only insert messages from yourself")
 		}
-		members := []Member{}
-		if err := u.Select(&members, &snek.Query{Set: snek.And{snek.Cond{"UserID", snek.EQ, u.Caller().UserID()}, snek.Cond{"GroupID", snek.EQ, next.GroupID}}}); err != nil {
-			return err
-		}
-		if len(members) == 0 {
-			return fmt.Errorf("can only insert messages into your own groups")
-		}
-		return nil
+		return snek.QueryHasResults(u.View, []Member{}, &snek.Query{Set: snek.And{snek.Cond{"GroupID", snek.EQ, next.GroupID}, snek.Cond{"UserID", snek.EQ, u.Caller().UserID()}}})
 	} else {
 		return fmt.Errorf("can only insert messages")
 	}
@@ -139,7 +140,10 @@ func main() {
 	if err := server.Register(s, &Message{}, queryControlMessage, updateControlMessage); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Opened %q, will listen to %q", opts.Path, opts.Addr)
+	if err := server.Register(s, &Group{}, queryControlGroup, updateControlGroup); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("opened %q, will listen to %q", opts.Path, opts.Addr)
 	// Finally start the server.
 	if err := s.Run(); err != nil {
 		log.Fatal(err)
@@ -163,29 +167,89 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   };
   const log = (text) => {
     const div = document.createElement('div');
-    const textNode = document.createTextNode(new Date() + ' ' + text);
+    const textNode = document.createTextNode(new Date().toLocaleTimeString() + ' ' + text);
 	div.appendChild(textNode)
-    document.getElementById('log').appendChild(div);
+    document.getElementById('log').prepend(div);
   };
-  const socket = new WebSocket('ws://localhost:8080/ws');
-  socket.addEventListener('open', (ev) => {
-    log('socket opened');
-    socket.addEventListener('message', (event) => {
-      log('message received: ' + event.data);
-    });
-    const send = (msg) => {
-      msg.ID = newID();
-  	  const json = JSON.stringify(msg);
-  	  log('sending ' + json);
-  	  socket.send(json);
-    };
-    const identityField = document.getElementById('identity');
-    identityField.addEventListener('change', (event) => {
-	  const userID = btoa(identifyField.value);
-      send({Identity: {Token: userID}});
-	  //send({Subscribe: {TypeName: 'Member', Match: {Cond: {Field: 'UserID', Comparator: '==', Value: userID}}}});
-    });
-  });
+  let backoff = 1;
+  const identityField = document.getElementById('identity');
+  let identityChangeHandler = (ev) => {};
+  identityField.addEventListener('change', (ev) => { identityChangeHandler(ev); });
+  const connect = () => {
+    identityField.value = '';
+	identityChangeHandler = (ev) => {};
+	console.log('connecting in ' + backoff);
+    setTimeout(() => {
+	  const awaitingResponse = {'': () => {
+	    log('response to unknown message?');
+	  },
+	  null: () => {
+	    log('response to unknown message?');
+	  }};
+	  const subscriptions = {};
+	  try {
+	    log('connecting socket');
+        const socket = new WebSocket('ws://localhost:8080/ws');
+	    socket.addEventListener('error', (ev) => {
+          log('socket error ', ev);
+		  connect();
+	    });
+        socket.addEventListener('open', (ev) => {
+          log('socket opened');
+	      socket.addEventListener('close', (ev) => {
+	        log('socket closed');
+		    connect();
+	      });
+          socket.addEventListener('message', (ev) => {
+            log('message received: ' + ev.data);
+	    	const obj = JSON.parse(ev.data);
+			if (obj.Result && obj.Result.CauseMessageID in awaitingResponse) {
+	    	  awaitingResponse[obj.Result.CauseMessageID](obj);
+	    	  delete awaitingResponse[obj.Result.CauseMessageID];
+			}
+			if (obj.Data && obj.Data.CauseMessageID in subscriptions) {
+			  subscriptions[obj.Data.CauseMessageID](JSON.parse(atob(obj.Data.Blob)));
+			}
+          });
+          const send = (msg) => {
+	        return new Promise((res, rej) => {
+              msg.ID = newID();
+			  if ('Subscribe' in msg) {
+			    subscriptions[msg.ID] = (obj) => {
+				  log('got subscription result ' + JSON.stringify(obj));
+				};
+			  }
+          	  const json = JSON.stringify(msg);
+          	  log('sending ' + json);
+	    	  awaitingResponse[msg.ID] = (resp) => {
+	    	    if (resp.Result.Error) {
+	    		  rej(resp);
+	    		} else {
+	    	      res(resp);
+	    		}
+	    	  };
+          	  socket.send(json);
+	    	});
+          };
+	      const subscribe = (typeName, match) => {
+			send({Subscribe: {TypeName: typeName, Match: match}}).then((resp) => {
+	    	  log('subscribed to ' + typeName);
+	    	});
+	      };
+          identityChangeHandler = (ev) => {
+            const userID = btoa(identityField.value);
+            send({Identity: {Token: userID}});
+			subscribe('Group', {Cond: {Field: 'OwnerID', Comparator: '=', Value: userID}});
+          };
+        });
+	  } catch (e) {
+	    log('connection failed');
+		connect();
+	  }
+	}, backoff);
+    backoff = Math.max(1000, Math.min(30*1000, backoff)) * 2;
+  };
+  connect();
 });
 </script>
 <style>

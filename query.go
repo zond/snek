@@ -2,20 +2,32 @@ package snek
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"reflect"
 	"strings"
 )
 
+// Set is a definition of instances matching given criteria.
+// Since the implementation is a bit simplistic (it doesn't
+// compute intersections, and it doesn't normalize criteria
+// to some simiplified form, so it can't generally compare
+// set equality) it will return some false negatives to the
+// Includes and Excludes methods. No false positives should
+// be returned however.
 type Set interface {
 	toWhereCondition(string) (string, []any)
 	matches(reflect.Value) (bool, error)
 	// Returns true if this set contains the value referred to by structPointer.
 	Matches(structPointer any) (bool, error)
-	// Returns true if there is no intersection between this set and otherSet.
+	// Returns true if it's guaranteed that there are no intersection between this set and otherSet.
+	// This implementation is a bit simplistic, and some false negatives may arise.
 	Excludes(otherSet Set) (bool, error)
-	// Returns true if otherSet is a subset of this set.
+	// Returns true if it's guaranteed that the otherSet is a subset of this set.
+	// This implementaiton is a bit simplistic, and some false negatives may arise.
 	Includes(otherSet Set) (bool, error)
+	// Returns the complement of this set.
+	Invert() (Set, error)
 }
 
 // None matches nothing.
@@ -35,6 +47,10 @@ func (n None) Excludes(s Set) (bool, error) {
 
 func (n None) Includes(s Set) (bool, error) {
 	return false, nil
+}
+
+func (n None) Invert() (Set, error) {
+	return All{}, nil
 }
 
 func (n None) Matches(structPointer any) (bool, error) {
@@ -60,6 +76,10 @@ func (a All) Includes(s Set) (bool, error) {
 	return true, nil
 }
 
+func (a All) Invert() (Set, error) {
+	return None{}, nil
+}
+
 func (a All) Matches(structPointer any) (bool, error) {
 	return true, nil
 }
@@ -78,6 +98,26 @@ const (
 
 func (c Comparator) unrecognizedErr() error {
 	return fmt.Errorf("unrecognized comparator %v", c)
+}
+
+func compareBytes(c Comparator, a, b []byte) (bool, error) {
+	cmp := bytes.Compare(a, b)
+	switch c {
+	case EQ:
+		return cmp == 0, nil
+	case NE:
+		return cmp != 0, nil
+	case GT:
+		return cmp > 0, nil
+	case GE:
+		return cmp >= 0, nil
+	case LT:
+		return cmp < 0, nil
+	case LE:
+		return cmp <= 0, nil
+	default:
+		return false, c.unrecognizedErr()
+	}
 }
 
 func comparePrimitives[T ~int | ~int64 | ~uint64 | ~string | ~float64](c Comparator, a, b T) (bool, error) {
@@ -99,13 +139,43 @@ func comparePrimitives[T ~int | ~int64 | ~uint64 | ~string | ~float64](c Compara
 	}
 }
 
+func (c Comparator) invert() (Comparator, error) {
+	switch c {
+	case EQ:
+		return NE, nil
+	case NE:
+		return EQ, nil
+	case GT:
+		return LE, nil
+	case GE:
+		return LT, nil
+	case LT:
+		return GE, nil
+	case LE:
+		return GT, nil
+	default:
+		return "", c.unrecognizedErr()
+	}
+}
+
+var (
+	byteSliceType = reflect.TypeOf([]byte{})
+)
+
 func (c Comparator) apply(a, b reflect.Value) (bool, error) {
 	incomparableB := func() (bool, error) {
-		return false, fmt.Errorf("%v %s %v: argument 1 not comparable to %T", a.Interface(), c, b.Interface(), a.Interface())
+		return false, fmt.Errorf("%v %s %v: %T not comparable to %T", a.Interface(), c, b.Interface(), a.Interface(), b.Interface())
 	}
 	if a.Kind() == reflect.String {
 		if b.Kind() == reflect.String {
 			return comparePrimitives(c, a.String(), b.String())
+		} else if b.CanConvert(byteSliceType) {
+			bBytes := b.Convert(byteSliceType).Interface().([]byte)
+			aBytes, err := base64.StdEncoding.DecodeString(a.String())
+			if err != nil {
+				return false, err
+			}
+			return compareBytes(c, aBytes, bBytes)
 		} else {
 			return incomparableB()
 		}
@@ -136,6 +206,19 @@ func (c Comparator) apply(a, b reflect.Value) (bool, error) {
 			return comparePrimitives(c, a.Float(), b.Float())
 		} else if b.CanInt() {
 			return comparePrimitives(c, a.Float(), float64(b.Int()))
+		} else {
+			return incomparableB()
+		}
+	} else if a.CanConvert(byteSliceType) {
+		aBytes := a.Convert(byteSliceType).Interface().([]byte)
+		if b.Kind() == reflect.String {
+			bBytes, err := base64.StdEncoding.DecodeString(b.String())
+			if err != nil {
+				return false, err
+			}
+			return compareBytes(c, aBytes, bBytes)
+		} else if bBytes, ok := b.Interface().([]byte); ok {
+			return compareBytes(c, aBytes, bBytes)
 		} else {
 			return incomparableB()
 		}
@@ -300,7 +383,10 @@ func (c Cond) Excludes(s Set) (bool, error) {
 			}
 		}
 		return false, nil
-
+	case All:
+		return false, nil
+	case None:
+		return true, nil
 	}
 	return s.Excludes(c)
 }
@@ -322,7 +408,19 @@ func (c Cond) Includes(s Set) (bool, error) {
 		return false, nil
 
 	}
-	return s.Includes(c)
+	invertedC, err := c.Invert()
+	if err != nil {
+		return false, err
+	}
+	return invertedC.Excludes(s)
+}
+
+func (c Cond) Invert() (Set, error) {
+	invertedComparator, err := c.Comparator.invert()
+	if err != nil {
+		return nil, err
+	}
+	return Cond{c.Field, invertedComparator, c.Value}, nil
 }
 
 func (c Cond) Matches(structPointer any) (bool, error) {
@@ -355,33 +453,41 @@ func (a And) toWhereCondition(tablePrefix string) (string, []any) {
 }
 
 func (a And) Excludes(s Set) (bool, error) {
-	acc := false
 	for _, part := range a {
 		exc, err := part.Excludes(s)
 		if err != nil {
 			return false, err
 		}
-		acc = acc || exc
-		if acc {
-			break
+		if exc {
+			return true, nil
 		}
 	}
-	return acc, nil
+	return false, nil
 }
 
 func (a And) Includes(s Set) (bool, error) {
-	acc := false
 	for _, part := range a {
 		inc, err := part.Includes(s)
 		if err != nil {
 			return false, err
 		}
-		acc = acc || inc
-		if acc {
-			break
+		if !inc {
+			return false, nil
 		}
 	}
-	return acc, nil
+	return true, nil
+}
+
+func (a And) Invert() (Set, error) {
+	result := Or{}
+	for _, part := range a {
+		invertedPart, err := part.Invert()
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, invertedPart)
+	}
+	return result, nil
 }
 
 func (a And) Matches(structPointer any) (bool, error) {
@@ -418,33 +524,41 @@ func (o Or) toWhereCondition(tablePrefix string) (string, []any) {
 }
 
 func (o Or) Excludes(s Set) (bool, error) {
-	acc := true
 	for _, part := range o {
 		exc, err := part.Excludes(s)
 		if err != nil {
 			return false, err
 		}
-		acc = acc && exc
-		if !acc {
-			break
+		if !exc {
+			return false, nil
 		}
 	}
-	return acc, nil
+	return true, nil
 }
 
 func (o Or) Includes(s Set) (bool, error) {
-	acc := true
 	for _, part := range o {
 		inc, err := part.Includes(s)
 		if err != nil {
 			return false, err
 		}
-		acc = acc && inc
-		if !acc {
-			break
+		if inc {
+			return true, nil
 		}
 	}
-	return acc, nil
+	return false, nil
+}
+
+func (o Or) Invert() (Set, error) {
+	result := And{}
+	for _, part := range o {
+		invertedPart, err := part.Invert()
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, invertedPart)
+	}
+	return result, nil
 }
 
 func (o Or) Matches(structPointer any) (bool, error) {
@@ -553,4 +667,27 @@ func (q *Query) toSelectStatement(structType reflect.Type) (string, []any) {
 	}
 	fmt.Fprint(buf, ";")
 	return buf.String(), params
+}
+
+// SetIncludes is a convenience for query control functions that checks if the subset is a subset of the given superset.
+func SetIncludes(superset, subset Set) error {
+	isSubset, err := superset.Includes(subset)
+	if err != nil {
+		return err
+	}
+	if !isSubset {
+		return fmt.Errorf("disallowed")
+	}
+	return nil
+}
+
+// QueryHasResults is a convenience for query control functions that checks if the query has results.
+func QueryHasResults[T any](v *View, s []T, q *Query) error {
+	if err := v.Select(&s, q); err != nil {
+		return err
+	}
+	if len(s) == 0 {
+		return fmt.Errorf("disallowed")
+	}
+	return nil
 }
