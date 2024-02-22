@@ -153,8 +153,39 @@ func main() {
 var html = `<html>
 <head>
 <title>snek demo</title>
+<script src='https://cdn.jsdelivr.net/npm/cbor-js@0.1.0/cbor.js'></script>
 <script>
 document.addEventListener('DOMContentLoaded', (ev) => {
+  const utf8enc = new TextEncoder();
+  const utf8dec = new TextDecoder();
+  const simplify = (o) => {
+    const res = {};
+	Object.keys(o).forEach((key) => {
+	  const value = o[key];
+	  if (value instanceof Uint8Array) {
+	    res[key] = btoa(value);
+	  } else if (value instanceof ArrayBuffer) {
+	    res[key] = btoa(value);
+	  } else if (value instanceof Object) {
+	    res[key] = simplify(value);
+	  } else {
+	    res[key] = value;
+	  }
+	});
+    return res;
+  };
+  const toArrayBuffer = (uint8Array) => {
+    return uint8Array.buffer.slice(uint8Array.byteOffset, uint8Array.byteLength + uint8Array.byteOffset);
+  };
+  const byteSerialize = (obj) => {
+    return new Uint8Array(CBOR.encode(obj));
+  };
+  const byteUnserialize = (uint8Array) => {
+    return CBOR.decode(toArrayBuffer(uint8Array));
+  };
+  const pp = (o) => {
+    return JSON.stringify(simplify(o));
+  };
   const newID = () => {
     const res = new Uint8Array(32);
 	window.crypto.getRandomValues(res);
@@ -163,22 +194,28 @@ document.addEventListener('DOMContentLoaded', (ev) => {
     res[1] = (now >> 16) & 0xff;
     res[2] = (now >> 8) & 0xff;
     res[3] = now & 0xff;
-	return btoa(String.fromCharCode.apply(null, res));
+	return res;
   };
-  const log = (text) => {
+  const log = (msg) => {
     const div = document.createElement('div');
-    const textNode = document.createTextNode(new Date().toLocaleTimeString() + ' ' + text);
-	div.appendChild(textNode)
+    const text = document.createTextNode(new Date().toLocaleTimeString() + ' ' + msg);
+	div.appendChild(text)
     document.getElementById('log').prepend(div);
   };
   let backoff = 1;
   const identityField = document.getElementById('identity');
+  const newGroupField = document.getElementById('new_group');
+  const ownedGroupsSpan = document.getElementById('owned_groups');
   let identityChangeHandler = (ev) => {};
   identityField.addEventListener('change', (ev) => { identityChangeHandler(ev); });
+  let newGroupChangeHandler = (ev) => {};
+  newGroupField.addEventListener('change', (ev) => { newGroupChangeHandler(ev); });
   const connect = () => {
     identityField.value = '';
+	newGroupField.setAttribute('disabled', true);
 	identityChangeHandler = (ev) => {};
-	console.log('connecting in ' + backoff);
+	newGroupChangeHandler = (ev) => {};
+	ownedGroupsSpan.innerHTML = '';
     setTimeout(() => {
 	  const awaitingResponse = {'': () => {
 	    log('response to unknown message?');
@@ -190,6 +227,7 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 	  try {
 	    log('connecting socket');
         const socket = new WebSocket('ws://localhost:8080/ws');
+		socket.binaryType = 'arraybuffer';
 	    socket.addEventListener('error', (ev) => {
           log('socket error ', ev);
 		  connect();
@@ -201,26 +239,23 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 		    connect();
 	      });
           socket.addEventListener('message', (ev) => {
-            log('message received: ' + ev.data);
-	    	const obj = JSON.parse(ev.data);
+	    	const obj = CBOR.decode(ev.data);
+            log('message received: ' + pp(obj));
 			if (obj.Result && obj.Result.CauseMessageID in awaitingResponse) {
 	    	  awaitingResponse[obj.Result.CauseMessageID](obj);
 	    	  delete awaitingResponse[obj.Result.CauseMessageID];
 			}
 			if (obj.Data && obj.Data.CauseMessageID in subscriptions) {
-			  subscriptions[obj.Data.CauseMessageID](JSON.parse(atob(obj.Data.Blob)));
+			  subscriptions[obj.Data.CauseMessageID](byteUnserialize(obj.Data.Blob));
 			}
           });
-          const send = (msg) => {
+          const send = (msg, opts = {}) => {
 	        return new Promise((res, rej) => {
               msg.ID = newID();
 			  if ('Subscribe' in msg) {
-			    subscriptions[msg.ID] = (obj) => {
-				  log('got subscription result ' + JSON.stringify(obj));
-				};
+			    subscriptions[msg.ID] = (opts['subscriber'] || (() => {}));
 			  }
-          	  const json = JSON.stringify(msg);
-          	  log('sending ' + json);
+          	  log('sending ' + pp(msg));
 	    	  awaitingResponse[msg.ID] = (resp) => {
 	    	    if (resp.Result.Error) {
 	    		  rej(resp);
@@ -228,18 +263,35 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 	    	      res(resp);
 	    		}
 	    	  };
-          	  socket.send(json);
+          	  socket.send(CBOR.encode(msg));
 	    	});
           };
-	      const subscribe = (typeName, match) => {
-			send({Subscribe: {TypeName: typeName, Match: match}}).then((resp) => {
+	      const subscribe = (typeName, match, handler) => {
+			send({Subscribe: {TypeName: typeName, Match: match}}, { subscriber: handler }).then((resp) => {
 	    	  log('subscribed to ' + typeName);
 	    	});
 	      };
           identityChangeHandler = (ev) => {
-            const userID = btoa(identityField.value);
-            send({Identity: {Token: userID}});
-			subscribe('Group', {Cond: {Field: 'OwnerID', Comparator: '=', Value: userID}});
+            const userID = utf8enc.encode(identityField.value);
+            send({Identity: {Token: userID}}).then(() => {
+			  newGroupField.removeAttribute('disabled');
+			  newGroupChangeHandler = (ev) => {
+			    const newGroup = {ID: utf8enc.encode(newGroupField.value), OwnerID: userID};
+				console.log('creating', newGroup);
+				log('creating ' + pp(newGroup));
+				send({Update: {TypeName: 'Group', Insert: byteSerialize(newGroup)}});
+			  };
+			  subscribe('Group', {Cond: {Field: 'OwnerID', Comparator: '=', Value: userID}}, (res) => {
+	            ownedGroupsSpan.innerHTML = '';
+				res.forEach((group) => {
+				  const span = document.createElement('span');
+				  span.setAttribute('class', 'group');
+				  const text = document.createTextNode(String.fromCharCode.apply(null, group.ID));
+				  span.appendChild(text);
+				  ownedGroupsSpan.appendChild(span);
+				});
+			  });
+			});
           };
         });
 	  } catch (e) {
@@ -259,12 +311,24 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   height: 10em;
   border: 1px solid grey;
 }
+.group {
+  margin-left: 1em;
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
 </style>
 </head>
 <body>
 <h1>snek demo</h1>
 <div id='log'></div>
 <input type='text' id='identity' placeholder='identity' />
+<div>
+<input disabled type='text' id='new_group' placeholder='new group name' />
+<span id='owned_groups'></span>
+</div>
 </body>
 </html>
 `

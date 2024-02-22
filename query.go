@@ -2,7 +2,6 @@ package snek
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"reflect"
 	"strings"
@@ -169,13 +168,6 @@ func (c Comparator) apply(a, b reflect.Value) (bool, error) {
 	if a.Kind() == reflect.String {
 		if b.Kind() == reflect.String {
 			return comparePrimitives(c, a.String(), b.String())
-		} else if b.CanConvert(byteSliceType) {
-			bBytes := b.Convert(byteSliceType).Interface().([]byte)
-			aBytes, err := base64.StdEncoding.DecodeString(a.String())
-			if err != nil {
-				return false, err
-			}
-			return compareBytes(c, aBytes, bBytes)
 		} else {
 			return incomparableB()
 		}
@@ -210,14 +202,9 @@ func (c Comparator) apply(a, b reflect.Value) (bool, error) {
 			return incomparableB()
 		}
 	} else if a.CanConvert(byteSliceType) {
-		aBytes := a.Convert(byteSliceType).Interface().([]byte)
-		if b.Kind() == reflect.String {
-			bBytes, err := base64.StdEncoding.DecodeString(b.String())
-			if err != nil {
-				return false, err
-			}
-			return compareBytes(c, aBytes, bBytes)
-		} else if bBytes, ok := b.Interface().([]byte); ok {
+		if b.CanConvert(byteSliceType) {
+			aBytes := a.Convert(byteSliceType).Interface().([]byte)
+			bBytes := b.Convert(byteSliceType).Interface().([]byte)
 			return compareBytes(c, aBytes, bBytes)
 		} else {
 			return incomparableB()

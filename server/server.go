@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/gorilla/websocket"
 	"github.com/zond/snek"
 	"github.com/zond/snek/synch"
@@ -16,9 +16,9 @@ import (
 
 // Match represents a serializable snek.Set.
 type Match struct {
-	And  []Match
-	Or   []Match
-	Cond *snek.Cond
+	And  []Match    `sbor:",omitempty"`
+	Or   []Match    `sbor:",omitempty"`
+	Cond *snek.Cond `sbor:",omitempty"`
 }
 
 func (m *Match) validate() error {
@@ -70,10 +70,10 @@ func (m *Match) toSet() (snek.Set, error) {
 // Sent from client to server. Represents a serializable snek.Query for a given type.
 type Subscribe struct {
 	TypeName string
-	Order    []snek.Order `json:",omitempy"`
-	Limit    uint         `json:",omitempty"`
-	Distinct bool         `json:",omitempty"`
-	Match    Match        `json:",omitempty"`
+	Order    []snek.Order `sbor:",omitempty"`
+	Limit    uint         `sbor:",omitempty"`
+	Distinct bool         `sbor:",omitempty"`
+	Match    Match        `sbor:",omitempty"`
 }
 
 func (s *Subscribe) toQuery() (*snek.Query, error) {
@@ -115,7 +115,7 @@ func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
 		}
 		b := []byte{}
 		if err == nil {
-			b, err = json.Marshal(args[0].Interface())
+			b, err = cbor.Marshal(args[0].Interface())
 		}
 		errString := ""
 		if err != nil {
@@ -149,8 +149,8 @@ func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
 // Sent by server after initial Subscribe and every time the data matching set of data is modified.
 type Data struct {
 	CauseMessageID snek.ID
-	Error          string `json:",omitempty"`
-	Blob           []byte `json:",omitempty"`
+	Error          string `sbor:",omitempty"`
+	Blob           []byte `sbor:",omitempty"`
 }
 
 func (d *Data) String() string {
@@ -160,9 +160,9 @@ func (d *Data) String() string {
 // Sent from client to server.
 type Update struct {
 	TypeName string
-	Insert   []byte
-	Update   []byte
-	Remove   []byte
+	Insert   []byte `sbor:",omitempty"`
+	Update   []byte `sbor:",omitempty"`
+	Remove   []byte `sbor:",omitempty"`
 }
 
 func (u *Update) String() string {
@@ -204,7 +204,7 @@ func (u *Update) execute(c *client) error {
 		return fmt.Errorf("%q not registered", u.TypeName)
 	}
 	instance := reflect.New(typ).Interface()
-	if err := json.Unmarshal(b, instance); err != nil {
+	if err := cbor.Unmarshal(b, instance); err != nil {
 		return err
 	}
 	return c.server.snek.Update(c.caller.Get(), func(upd *snek.Update) error {
@@ -222,7 +222,7 @@ func (u *Update) execute(c *client) error {
 // Sent from server as response to every message from the client.
 type Result struct {
 	CauseMessageID snek.ID
-	Error          string `json:",omitempty"`
+	Error          string
 }
 
 func (r *Result) String() string {
@@ -252,14 +252,14 @@ type Message struct {
 	ID snek.ID
 
 	// From client to server.
-	Subscribe   *Subscribe   `json:",omitempty"`
-	Unsubscribe *Unsubscribe `json:",omitempty"`
-	Update      *Update      `json:",omitempty"`
-	Identity    *Identity    `json:",omitempty"`
+	Subscribe   *Subscribe   `sbor:",omitempty"`
+	Unsubscribe *Unsubscribe `sbor:",omitempty"`
+	Update      *Update      `sbor:",omitempty"`
+	Identity    *Identity    `sbor:",omitempty"`
 
 	// From server to client.
-	Data   *Data   `json:",omitempty"`
-	Result *Result `json:",omitempty"`
+	Data   *Data   `sbor:",omitempty"`
+	Result *Result `sbor:",omitempty"`
 }
 
 func (c *client) response(m *Message, err error) *Message {
@@ -324,7 +324,8 @@ func (c *client) readLoop() {
 		} else {
 			go func() {
 				message := &Message{}
-				if err := json.Unmarshal(b, message); err != nil {
+				if err := cbor.Unmarshal(b, message); err != nil {
+					log.Printf("got %v", err)
 					c.send(c.response(nil, fmt.Errorf("unable to parse message: %v", err)))
 					return
 				}
@@ -367,13 +368,13 @@ func (c *client) readLoop() {
 }
 
 func (c *client) send(m *Message) error {
-	b, err := json.Marshal(m)
+	b, err := cbor.Marshal(m)
 	if err != nil {
 		return err
 	}
 	err = c.lock.Sync(func() error {
 		c.conn.SetWriteDeadline(time.Now().Add(c.server.opts.WriteWait))
-		return c.conn.WriteMessage(websocket.TextMessage, b)
+		return c.conn.WriteMessage(websocket.BinaryMessage, b)
 	})
 	if err != nil {
 		log.Printf("while sending %+v: %v", m, err)

@@ -229,6 +229,7 @@ func (u *Update) Insert(structPointer any) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("inserting something with id %+v", []byte(info.id))
 
 	if err := u.updateControl(info.typ, nil, structPointer); err != nil {
 		return err
