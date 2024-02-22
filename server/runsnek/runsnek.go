@@ -206,10 +206,12 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   const identityField = document.getElementById('identity');
   const newGroupField = document.getElementById('new_group');
   const ownedGroupsSpan = document.getElementById('owned_groups');
+  const viewedGroupDiv = document.getElementById('viewed_group');
   let identityChangeHandler = (ev) => {};
   identityField.addEventListener('change', (ev) => { identityChangeHandler(ev); });
   let newGroupChangeHandler = (ev) => {};
   newGroupField.addEventListener('change', (ev) => { newGroupChangeHandler(ev); });
+  let groupMemberUnsubscribe = (() => {});
   const connect = () => {
     identityField.value = '';
 	newGroupField.setAttribute('disabled', true);
@@ -260,6 +262,17 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 	    	    if (resp.Result.Error) {
 	    		  rej(resp);
 	    		} else {
+				  if ('Subscribe' in msg) {
+				    resp['unsubscribe'] = () => {
+					  send({ID: newID(), Unsubscribe: {SubscriptionID: msg.ID}}).then((res) => {
+					    if (resp.Result.Error) {
+						  log('error unsubscribing: ', resp.Result.Error);
+						} else {
+						  log('unsubscribed from ' + msg.Subscribe.TypeName);
+						}
+					  });
+					};
+				  }
 	    	      res(resp);
 	    		}
 	    	  };
@@ -267,9 +280,14 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 	    	});
           };
 	      const subscribe = (typeName, match, handler) => {
-			send({Subscribe: {TypeName: typeName, Match: match}}, { subscriber: handler }).then((resp) => {
-	    	  log('subscribed to ' + typeName);
-	    	});
+		    return new Promise((res, rej) => {
+			  send({Subscribe: {TypeName: typeName, Match: match}}, { subscriber: handler }).then((resp) => {
+	    	    log('subscribed to ' + typeName);
+				res(resp.unsubscribe);
+			  }).catch((err) => {
+			    rej(err);
+			  });
+			});
 	      };
           identityChangeHandler = (ev) => {
             const userID = utf8enc.encode(identityField.value);
@@ -284,11 +302,23 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 			  subscribe('Group', {Cond: {Field: 'OwnerID', Comparator: '=', Value: userID}}, (res) => {
 	            ownedGroupsSpan.innerHTML = '';
 				res.forEach((group) => {
+				  const groupName = utf8dec.decode(group.ID);
 				  const span = document.createElement('span');
 				  span.setAttribute('class', 'group');
-				  const text = document.createTextNode(String.fromCharCode.apply(null, group.ID));
-				  span.appendChild(text);
+				  const button = document.createElement('button');
+				  button.setAttribute('id', 'group_' + groupName);
+				  const text = document.createTextNode(groupName);
+				  button.appendChild(text);
+				  span.appendChild(button);
 				  ownedGroupsSpan.appendChild(span);
+				  button.addEventListener('click', (ev) => {
+					groupMemberUnsubscribe();
+					subscribe('Member', {Cond: {Field: 'GroupID', Comparator: '=', Value: group.ID}}, (res) => {
+					  console.log('group member result', res);
+					}).then((unsub) => {
+					  groupMemberUnsubscribe = unsub;
+					});
+				  });
 				});
 			  });
 			});
@@ -328,6 +358,8 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 <div>
 <input disabled type='text' id='new_group' placeholder='new group name' />
 <span id='owned_groups'></span>
+</div>
+<div id='viewed_group_members'>
 </div>
 </body>
 </html>
