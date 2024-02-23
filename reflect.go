@@ -18,10 +18,17 @@ type fieldInfo struct {
 	columnType string
 	value      any
 	indexed    bool
+	unique     bool
 	primaryKey bool
 }
 
 type fieldInfoMap map[string]fieldInfo
+
+// Uniquer are types that have unique combinations of fields.
+type Uniquer interface {
+	// Unique returns a slice of unique field combinations.
+	Unique() [][]string
+}
 
 func (i *valueInfo) toCreateStatement() string {
 	builder := &bytes.Buffer{}
@@ -33,10 +40,23 @@ func (i *valueInfo) toCreateStatement() string {
 		if fieldInfo.primaryKey {
 			primaryKey = " PRIMARY KEY"
 		}
-		if fieldInfo.indexed {
-			createIndexParts = append(createIndexParts, fmt.Sprintf("CREATE INDEX IF NOT EXISTS \"%s.%s\" ON \"%s\" (\"%s\");", i.typ.Name(), fieldName, i.typ.Name(), fieldName))
+		if fieldInfo.indexed || fieldInfo.unique {
+			unique := ""
+			if fieldInfo.unique {
+				unique = " UNIQUE"
+			}
+			createIndexParts = append(createIndexParts, fmt.Sprintf("CREATE%s INDEX IF NOT EXISTS \"%s.%s\" ON \"%s\" (\"%s\");", unique, i.typ.Name(), fieldName, i.typ.Name(), fieldName))
 		}
 		fieldParts = append(fieldParts, fmt.Sprintf("  \"%s\" %s%s", fieldName, fieldInfo.columnType, primaryKey))
+	}
+	if uniquer, ok := i.val.Interface().(Uniquer); ok {
+		for _, combo := range uniquer.(Uniquer).Unique() {
+			fieldParts := []string{}
+			for _, part := range combo {
+				fieldParts = append(fieldParts, fmt.Sprintf("\"%s\"", part))
+			}
+			createIndexParts = append(createIndexParts, fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS \"%s.%s\" ON \"%s\" (%s);", i.typ.Name(), strings.Join(combo, "_"), i.typ.Name(), strings.Join(fieldParts, ", ")))
+		}
 	}
 	fmt.Fprintf(builder, "%s);", strings.Join(fieldParts, ",\n"))
 	if len(createIndexParts) > 0 {
@@ -95,6 +115,7 @@ func (f fieldInfoMap) addFields(prefix string, val reflect.Value) {
 				columnType: columnType,
 				value:      fieldVal.Interface(),
 				indexed:    field.Tag.Get("snek") == "index",
+				unique:     field.Tag.Get("snek") == "unique",
 				primaryKey: prefix == "" && field.Name == "ID",
 			}
 
