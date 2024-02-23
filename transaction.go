@@ -80,6 +80,8 @@ func logSQL(s *Snek, query string, params []any, err error) {
 			switch v := param.(type) {
 			case string:
 				paramParts = append(paramParts, fmt.Sprintf("%q", v))
+			case ID:
+				paramParts = append(paramParts, fmt.Sprintf("%v", []byte(v)))
 			default:
 				paramParts = append(paramParts, fmt.Sprintf("%+v", v))
 			}
@@ -105,10 +107,11 @@ func (v *View) Select(structSlicePointer any, query *Query) error {
 		return fmt.Errorf("only pointers to slices of structs allowed, not %v", typ)
 	}
 	structType := typ.Elem().Elem()
-	if err := v.queryControl(structType, query); err != nil {
+	queryCopy := *query
+	if err := v.queryControl(structType, &queryCopy); err != nil {
 		return err
 	}
-	sql, params := query.toSelectStatement(structType)
+	sql, params := queryCopy.toSelectStatement(structType)
 	err := v.tx.SelectContext(v.snek.ctx, structSlicePointer, sql, params...)
 	logSQL(v.snek, sql, params, err)
 	return err
@@ -173,7 +176,7 @@ func (u *Update) loadAndAddSubscriptionsForCurrent(info *valueInfo) (any, error)
 		return nil, err
 	}
 	u.subscriptions.merge(u.snek.getSubscriptionsFor(existingVal.Elem()))
-	return existingVal.Elem().Interface(), nil
+	return existingVal.Interface(), nil
 }
 
 // Remove removes the data at structPointer.ID.
@@ -229,7 +232,6 @@ func (u *Update) Insert(structPointer any) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("inserting something with id %+v", []byte(info.id))
 
 	if err := u.updateControl(info.typ, nil, structPointer); err != nil {
 		return err

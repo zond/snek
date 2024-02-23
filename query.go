@@ -355,6 +355,10 @@ type Cond struct {
 	Value      any
 }
 
+func (c *Cond) String() string {
+	return fmt.Sprintf("%+v", *c)
+}
+
 func (c Cond) Excludes(s Set) (bool, error) {
 	switch other := s.(type) {
 	case Cond:

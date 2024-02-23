@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,6 +20,10 @@ type Match struct {
 	And  []Match    `sbor:",omitempty"`
 	Or   []Match    `sbor:",omitempty"`
 	Cond *snek.Cond `sbor:",omitempty"`
+}
+
+func (m *Match) String() string {
+	return fmt.Sprintf("%+v", *m)
 }
 
 func (m *Match) validate() error {
@@ -90,7 +95,7 @@ func (s *Subscribe) toQuery() (*snek.Query, error) {
 }
 
 func (s *Subscribe) String() string {
-	return fmt.Sprint(*s)
+	return fmt.Sprintf("%+v", *s)
 }
 
 var (
@@ -154,19 +159,26 @@ type Data struct {
 }
 
 func (d *Data) String() string {
-	return fmt.Sprint(*d)
+	return fmt.Sprintf("%+v", *d)
+}
+
+// PrettyBytes are bytes that default print as hex encoded.
+type PrettyBytes []byte
+
+func (p PrettyBytes) String() string {
+	return hex.EncodeToString([]byte(p))
 }
 
 // Sent from client to server.
 type Update struct {
 	TypeName string
-	Insert   []byte `sbor:",omitempty"`
-	Update   []byte `sbor:",omitempty"`
-	Remove   []byte `sbor:",omitempty"`
+	Insert   PrettyBytes `sbor:",omitempty"`
+	Update   PrettyBytes `sbor:",omitempty"`
+	Remove   PrettyBytes `sbor:",omitempty"`
 }
 
 func (u *Update) String() string {
-	return fmt.Sprint(*u)
+	return fmt.Sprintf("%+v", *u)
 }
 
 type updateOp string
@@ -226,7 +238,7 @@ type Result struct {
 }
 
 func (r *Result) String() string {
-	return fmt.Sprint(*r)
+	return fmt.Sprintf("%+v", *r)
 }
 
 // Sent from client to server to attain a caller identity.
@@ -235,7 +247,7 @@ type Identity struct {
 }
 
 func (i *Identity) String() string {
-	return fmt.Sprint(*i)
+	return fmt.Sprintf("%+v", *i)
 }
 
 // Sent from client to server to cancel the subscription whose Response message had the ID defined by SubscriptionID.
@@ -244,7 +256,7 @@ type Unsubscribe struct {
 }
 
 func (u *Unsubscribe) String() string {
-	return fmt.Sprint(*u)
+	return fmt.Sprintf("%+v", *u)
 }
 
 // Sent in both directions.
