@@ -615,6 +615,16 @@ type Query struct {
 	Joins    []Join
 }
 
+func (q *Query) clone() *Query {
+	return &Query{
+		Set:      q.Set,
+		Limit:    q.Limit,
+		Distinct: q.Distinct,
+		Order:    append([]Order{}, q.Order...),
+		Joins:    append([]Join{}, q.Joins...),
+	}
+}
+
 func getWhereCondition(tablePrefix string, s Set, def Set) (string, []any) {
 	if s == nil {
 		return def.toWhereCondition(tablePrefix)

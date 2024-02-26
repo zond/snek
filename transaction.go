@@ -107,8 +107,8 @@ func (v *View) Select(structSlicePointer any, query *Query) error {
 		return fmt.Errorf("only pointers to slices of structs allowed, not %v", typ)
 	}
 	structType := typ.Elem().Elem()
-	queryCopy := *query
-	if err := v.queryControl(structType, &queryCopy); err != nil {
+	queryCopy := query.clone()
+	if err := v.queryControl(structType, queryCopy); err != nil {
 		return err
 	}
 	sql, params := queryCopy.toSelectStatement(structType)
