@@ -12,9 +12,10 @@ import (
 
 // View represents a read-only transaction.
 type View struct {
-	tx     *sqlx.Tx
-	snek   *Snek
-	caller Caller
+	tx        *sqlx.Tx
+	snek      *Snek
+	caller    Caller
+	isControl bool
 }
 
 // Caller returns the caller of this view.
@@ -23,10 +24,14 @@ func (v *View) Caller() Caller {
 }
 
 func (v *View) queryControl(typ reflect.Type, query *Query) error {
+	if v.isControl {
+		return nil
+	}
 	perms, found := v.snek.permissions[typ.Name()]
 	if !found || perms.queryControl == nil {
 		return fmt.Errorf("%s not registered with query control", typ.Name())
 	}
+	v.isControl = true
 	return perms.queryControl(v, query)
 }
 
@@ -37,10 +42,14 @@ type Update struct {
 }
 
 func (u *Update) updateControl(typ reflect.Type, prev, next any) error {
+	if u.View.isControl {
+		return nil
+	}
 	perms, found := u.snek.permissions[typ.Name()]
 	if !found || perms.updateControl == nil {
 		return fmt.Errorf("%s not registered with update control", typ.Name())
 	}
+	u.View.isControl = true
 	return perms.updateControl(u, prev, next)
 }
 

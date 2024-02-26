@@ -162,12 +162,6 @@ func Subscribe(s *Snek, caller Caller, query *Query, subscriber Subscriber) (Sub
 		subscriber: subscriber,
 		caller:     caller,
 	}
-	queryCopy := query.clone()
-	if err := s.View(caller, func(v *View) error {
-		return v.queryControl(sub.subscriber.getType(), queryCopy)
-	}); err != nil {
-		return nil, err
-	}
 	subs := s.getSubscriptions(sub.subscriber.getType())
 	subs.Set(string(sub.id), sub)
 	go func() {

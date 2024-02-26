@@ -58,19 +58,25 @@ func queryControlMember(v *snek.View, query *snek.Query) error {
 	if err := v.Select(&ownedGroups, &snek.Query{Set: snek.Cond{"OwnerID", snek.EQ, v.Caller().UserID()}}); err != nil {
 		return err
 	}
-	ownsCond := snek.Or{}
-	for _, ownedGroup := range ownedGroups {
-		ownsCond = append(ownsCond, snek.Cond{"GroupID", snek.EQ, ownedGroup.ID})
+	memberships := []Member{}
+	if err := v.Select(&memberships, &snek.Query{Set: snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}}); err != nil {
+		return err
 	}
-	onlyOwned, err := ownsCond.Includes(query.Set)
+	okCond := snek.Or{}
+	for _, ownedGroup := range ownedGroups {
+		okCond = append(okCond, snek.Cond{"GroupID", snek.EQ, ownedGroup.ID})
+	}
+	for _, membership := range memberships {
+		okCond = append(okCond, snek.Cond{"GroupID", snek.EQ, membership.GroupID})
+	}
+	onlyOwned, err := okCond.Includes(query.Set)
 	if err != nil {
 		return err
 	}
 	if onlyOwned {
 		return nil
 	}
-	query.Joins = append(query.Joins, snek.NewJoin(&Member{}, snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}, []snek.On{{"GroupID", snek.EQ, "GroupID"}}))
-	return nil
+	return fmt.Errorf("can only query memberships of owned or member groups")
 }
 
 // updateControlMember gatekeeps update access to Member instances.
