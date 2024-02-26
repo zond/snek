@@ -35,6 +35,13 @@ func updateControlGroup(u *snek.Update, prev, next *Group) error {
 		if !prev.OwnerID.Equal(u.Caller().UserID()) {
 			return fmt.Errorf("can only remove your own groups")
 		}
+		memberships := []Member{}
+		if err := u.Select(&memberships, &snek.Query{Set: snek.Cond{"GroupID", snek.EQ, prev.ID}}); err != nil {
+			return err
+		}
+		if len(memberships) > 0 {
+			return fmt.Errorf("can only remove empty groups")
+		}
 		return nil
 	} else {
 		return fmt.Errorf("can't update groups")
@@ -54,6 +61,9 @@ func (m Member) Unique() [][]string {
 
 // queryControlMember gatekeeps view access to Member instances.
 func queryControlMember(v *snek.View, query *snek.Query) error {
+	if err := snek.SetIncludes(snek.Cond{"UserID", snek.EQ, v.Caller().UserID()}, query.Set); err == nil {
+		return nil
+	}
 	ownedGroups := []Group{}
 	if err := v.Select(&ownedGroups, &snek.Query{Set: snek.Cond{"OwnerID", snek.EQ, v.Caller().UserID()}}); err != nil {
 		return err
@@ -69,11 +79,11 @@ func queryControlMember(v *snek.View, query *snek.Query) error {
 	for _, membership := range memberships {
 		okCond = append(okCond, snek.Cond{"GroupID", snek.EQ, membership.GroupID})
 	}
-	onlyOwned, err := okCond.Includes(query.Set)
+	onlyOwnedOrMember, err := okCond.Includes(query.Set)
 	if err != nil {
 		return err
 	}
-	if onlyOwned {
+	if onlyOwnedOrMember {
 		return nil
 	}
 	return fmt.Errorf("can only query memberships of owned or member groups")
@@ -231,23 +241,30 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   const identityField = document.getElementById('identity');
   let identityChangeHandler = (ev) => {};
   identityField.addEventListener('change', (ev) => { identityChangeHandler(ev); });
-  const newGroupField = document.getElementById('new_group');
+  const newGroupField = document.getElementById('new-group');
   let newGroupChangeHandler = (ev) => {};
   newGroupField.addEventListener('change', (ev) => { newGroupChangeHandler(ev); });
-  const ownedGroupsSpan = document.getElementById('owned_groups');
-  const newMemberField = document.getElementById('new_member');
+  const ownedGroupsSpan = document.getElementById('owned-groups');
+  const memberGroupsSpan = document.getElementById('member-groups');
+  const newMemberField = document.getElementById('new-member');
   let newMemberChangeHandler = (ev) => {};
   newMemberField.addEventListener('change', (ev) => { newMemberChangeHandler(ev); });
-  const groupMembersSpan = document.getElementById('group_members');
-  let groupMemberUnsubscribe = (() => {});
+  const groupMembersSpan = document.getElementById('group-members');
+  let ownedGroupMembersUnsubscribe = (() => {});
+  const clear = () => {
+	newGroupChangeHandler = (ev) => {};
+	ownedGroupsSpan.innerHTML = '';
+	groupMembersSpan.innerHTML = '';
+	memberGroupsSpan.innerHTML = '';
+	ownedGroupMembersUnsubscribe();
+	ownedGroupMembersUnsubscribe = (() => {});
+  };
   const connect = () => {
     identityField.value = '';
 	newGroupField.setAttribute('disabled', true);
 	identityChangeHandler = (ev) => {};
-	newGroupChangeHandler = (ev) => {};
-	ownedGroupsSpan.innerHTML = '';
-	groupMembersSpan.innerHTML = '';
 	newMemberField.setAttribute('disable', true);
+	clear();
     setTimeout(() => {
 	  const awaitingResponse = {'': () => {
 	    log('response to unknown message?');
@@ -322,6 +339,7 @@ document.addEventListener('DOMContentLoaded', (ev) => {
           identityChangeHandler = (ev) => {
             const userID = utf8enc.encode(identityField.value);
             send({Identity: {Token: userID}}).then(() => {
+			  clear();
 			  newGroupField.removeAttribute('disabled');
 			  newGroupChangeHandler = (ev) => {
 			    if (newGroupField.value) {
@@ -334,54 +352,83 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 				  });
 				}
 			  };
-			  subscribe('Group', {Cond: {Field: 'OwnerID', Comparator: '=', Value: userID}}, (res) => {
-	            ownedGroupsSpan.innerHTML = '';
-				res.forEach((group) => {
-				  const groupName = utf8dec.decode(group.ID);
+  			  subscribe('Group', {Cond: {Field: 'OwnerID', Comparator: '=', Value: userID}}, (res) => {
+  	            ownedGroupsSpan.innerHTML = '';
+  				res.forEach((group) => {
+  				  const groupName = utf8dec.decode(group.ID);
+  				  const span = document.createElement('span');
+  				  span.setAttribute('class', 'ui-label');
+  				  const button = document.createElement('button');
+  				  const text = document.createTextNode(groupName);
+  				  const removeButton = document.createElement('button');
+  				  removeButton.setAttribute('class', 'remove_button');
+  				  removeButton.addEventListener('click', (ev) => {
+  				    send({Update: {TypeName: 'Group', Remove: byteSerialize(group)}}).then((res) => {
+					  log('removed group');
+					}).catch((err) => {
+					  log('failed removing group: ' + pp(err));
+					});
+  				  });
+  				  const trashcan = document.createTextNode('🗑️');
+  				  removeButton.appendChild(trashcan);
+  				  button.appendChild(text);
+  				  span.appendChild(button);
+  				  span.appendChild(removeButton);
+  				  ownedGroupsSpan.appendChild(span);
+  				  button.addEventListener('click', (ev) => {
+  				    newMemberField.removeAttribute('disabled');
+  					newMemberChangeHandler = (ev) => {
+  					  if (newMemberField.value) {
+  					    const newMember = {ID: newID(), GroupID: group.ID, UserID: utf8enc.encode(newMemberField.value)};
+  					    log('creating ' + pp(newMember));
+  					    send({Update: {TypeName: 'Member', Insert: byteSerialize(newMember)}}).then((res) => {
+  						  newMemberField.value = '';
+  						}).catch((err) => {
+  						  log('failed creating member: ' + pp(err));
+  						});
+  					  }
+  					};
+  					ownedGroupMembersUnsubscribe();
+  					subscribe('Member', {Cond: {Field: 'GroupID', Comparator: '=', Value: group.ID}}, (res) => {
+  					  groupMembersSpan.innerHTML = '';
+  					  res.forEach((member) => {
+  					    const memberName = utf8dec.decode(member.UserID);
+  						const span = document.createElement('span');
+  						span.setAttribute('class', 'ui-label');
+  						const removeButton = document.createElement('button');
+  						removeButton.setAttribute('class', 'remove_button');
+  						removeButton.addEventListener('click', (ev) => {
+  						  send({Update: {TypeName: 'Member', Remove: byteSerialize(member)}}).then((res) => {
+						    log('removed member');
+						  }).catch((err) => {
+						    log('failed removing member: ' + pp(err));
+						  });
+  						});
+  						const trashcan = document.createTextNode('🗑️');
+  						removeButton.appendChild(trashcan);
+  						const text = document.createTextNode(memberName);
+  						span.appendChild(text);
+  						span.appendChild(removeButton);
+  						groupMembersSpan.appendChild(span);
+  					  });
+  					}).then((unsub) => {
+  					  ownedGroupMembersUnsubscribe = unsub;
+  					});
+  				  });
+  				});
+  			  });
+			  console.log('subscribing');
+			  subscribe('Member', {Cond: {Field: 'UserID', Comparator: '=', Value: userID}}, (res) => {
+			    memberGroupsSpan.innerHTML = '';
+				res.forEach((member) => {
+				  const groupName = utf8dec.decode(member.GroupID);
 				  const span = document.createElement('span');
-				  span.setAttribute('class', 'group');
+				  span.setAttribute('class', 'ui-label');
 				  const button = document.createElement('button');
-				  button.setAttribute('id', 'group_' + groupName);
 				  const text = document.createTextNode(groupName);
 				  button.appendChild(text);
 				  span.appendChild(button);
-				  ownedGroupsSpan.appendChild(span);
-				  button.addEventListener('click', (ev) => {
-				    newMemberField.removeAttribute('disabled');
-					newMemberChangeHandler = (ev) => {
-					  if (newMemberField.value) {
-					    const newMember = {ID: newID(), GroupID: group.ID, UserID: utf8enc.encode(newMemberField.value)};
-					    log('creating ' + pp(newMember));
-					    send({Update: {TypeName: 'Member', Insert: byteSerialize(newMember)}}).then((res) => {
-						  newMemberField.value = '';
-						}).catch((err) => {
-						  log('failed creating member: ' + pp(err));
-						});
-					  }
-					};
-					groupMemberUnsubscribe();
-					subscribe('Member', {Cond: {Field: 'GroupID', Comparator: '=', Value: group.ID}}, (res) => {
-					  groupMembersSpan.innerHTML = '';
-					  res.forEach((member) => {
-					    const memberName = utf8dec.decode(member.UserID);
-						const span = document.createElement('span');
-						span.setAttribute('class', 'member');
-						const removeButton = document.createElement('button');
-						removeButton.setAttribute('class', 'remove_button');
-						removeButton.addEventListener('click', (ev) => {
-						  send({Update: {TypeName: 'Member', Remove: byteSerialize(member)}});
-						});
-						const trashcan = document.createTextNode('🗑️');
-						const text = document.createTextNode(memberName);
-						span.appendChild(text);
-						removeButton.appendChild(trashcan);
-						span.appendChild(removeButton);
-						groupMembersSpan.appendChild(span);
-					  });
-					}).then((unsub) => {
-					  groupMemberUnsubscribe = unsub;
-					});
-				  });
+				  memberGroupsSpan.appendChild(span);
 				});
 			  });
 			});
@@ -407,23 +454,15 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   height: 10em;
   border: 1px solid grey;
 }
-.group {
-  margin-left: 1em;
-  display: inline-block;
+.ui-label {
+  margin-right: 1em;
+  display: inline-flex;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   vertical-align: middle;
 }
-.member {
-  margin-left: 1em;
-  display: inline-block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  vertical-align: middle;
-}
-.ownership {
+.ui-box {
   margin: 0.5em;
   border: 1px solid grey;
 }
@@ -437,16 +476,20 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 <h1>snek demo</h1>
 <div id='log'></div>
 <input type='text' id='identity' placeholder='identity' />
-<div class='ownership'>
+<div class='ui-box'>
 <h4>Owned groups</h4>
 <div>
-<input disabled type='text' id='new_group' placeholder='new group name' />
-<span id='owned_groups'></span>
+<input disabled type='text' id='new-group' placeholder='new group name' />
+<span id='owned-groups'></span>
 </div>
 <div>
-<input disabled type='text' id='new_member' placeholder='new member name' />
-<span id='group_members'></span>
+<input disabled type='text' id='new-member' placeholder='new member name' />
+<span id='group-members'></span>
 </div>
+</div>
+<div class='ui-box'>
+<h4>Memberships</h4>
+<span id='member-groups'></span>
 </div>
 </body>
 </html>

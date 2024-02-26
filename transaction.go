@@ -32,6 +32,7 @@ func (v *View) queryControl(typ reflect.Type, query *Query) error {
 		return fmt.Errorf("%s not registered with query control", typ.Name())
 	}
 	v.isControl = true
+	defer func() { v.isControl = false }()
 	return perms.queryControl(v, query)
 }
 
@@ -50,6 +51,7 @@ func (u *Update) updateControl(typ reflect.Type, prev, next any) error {
 		return fmt.Errorf("%s not registered with update control", typ.Name())
 	}
 	u.View.isControl = true
+	defer func() { u.View.isControl = false }()
 	return perms.updateControl(u, prev, next)
 }
 
@@ -77,8 +79,8 @@ func (s *Snek) View(caller Caller, f func(*View) error) error {
 	})
 }
 
-func logSQL(s *Snek, query string, params []any, err error) {
-	if !s.options.LogSQL {
+func (v *View) logSQL(query string, params []any, structSlicePointer any, err error) {
+	if !v.snek.options.LogSQL {
 		return
 	}
 	indentedQuery := strings.Join(strings.Split(query, "\n"), "\n  ")
@@ -97,13 +99,15 @@ func logSQL(s *Snek, query string, params []any, err error) {
 		}
 		paramString = fmt.Sprintf("\nParameters: %s", strings.Join(paramParts, ", "))
 	}
-	s.logIf(s.options.LogSQL, "SQL => %v\n  %s%s", err, indentedQuery, paramString)
-}
-
-func (v *View) query(query string, params ...any) (*sqlx.Rows, error) {
-	rows, err := v.tx.QueryxContext(v.snek.ctx, query, params...)
-	logSQL(v.snek, query, params, err)
-	return rows, err
+	res := ""
+	if structSlicePointer != nil {
+		res = fmt.Sprintf("(%d results), ", reflect.ValueOf(structSlicePointer).Elem().Len())
+	}
+	acl := ""
+	if v.isControl {
+		acl = "[ACL] "
+	}
+	v.snek.logIf(v.snek.options.LogSQL, "%sSQL => %s%v\n  %s%s", acl, res, err, indentedQuery, paramString)
 }
 
 // Select executs the query and puts the results in structSlicePointer.
@@ -122,14 +126,14 @@ func (v *View) Select(structSlicePointer any, query *Query) error {
 	}
 	sql, params := queryCopy.toSelectStatement(structType)
 	err := v.tx.SelectContext(v.snek.ctx, structSlicePointer, sql, params...)
-	logSQL(v.snek, sql, params, err)
+	v.logSQL(sql, params, structSlicePointer, err)
 	return err
 }
 
 func (v *View) get(structPointer any, info *valueInfo) error {
 	sql, params := info.toGetStatement()
 	err := v.tx.GetContext(v.snek.ctx, structPointer, sql, params...)
-	logSQL(v.snek, sql, params, err)
+	v.logSQL(sql, params, nil, err)
 	return err
 }
 
@@ -145,7 +149,7 @@ func (v *View) Get(structPointer any) error {
 	}
 	sql, params := query.toSelectStatement(info.typ)
 	err = v.tx.GetContext(v.snek.ctx, structPointer, sql, params...)
-	logSQL(v.snek, sql, params, err)
+	v.logSQL(sql, params, nil, err)
 	return err
 }
 
@@ -256,6 +260,6 @@ func (u *Update) Insert(structPointer any) error {
 
 func (u *Update) exec(sql string, params ...any) error {
 	_, err := u.tx.ExecContext(u.snek.ctx, sql, params...)
-	logSQL(u.snek, sql, params, err)
+	u.View.logSQL(sql, params, nil, err)
 	return err
 }

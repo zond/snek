@@ -337,7 +337,6 @@ func (c *client) readLoop() {
 			go func() {
 				message := &Message{}
 				if err := cbor.Unmarshal(b, message); err != nil {
-					log.Printf("got %v", err)
 					c.send(c.response(nil, fmt.Errorf("unable to parse message: %v", err)))
 					return
 				}
