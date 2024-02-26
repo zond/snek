@@ -102,10 +102,10 @@ func updateControlMember(u *snek.Update, prev, next *Member) error {
 
 // Message defines a chat message in a chat group.
 type Message struct {
-	ID      snek.ID
-	GroupID snek.ID
-	Sender  snek.ID
-	Body    string
+	ID       snek.ID
+	GroupID  snek.ID
+	SenderID snek.ID
+	Body     string
 }
 
 // queryControlMessage gatekeeps view access to Message instances.
@@ -117,7 +117,7 @@ func queryControlMessage(v *snek.View, query *snek.Query) error {
 // updateControlMessage gatekeeps update access to Message instances.
 func updateControlMessage(u *snek.Update, prev, next *Message) error {
 	if prev == nil && next != nil {
-		if !next.Sender.Equal(u.Caller().UserID()) {
+		if !next.SenderID.Equal(u.Caller().UserID()) {
 			return fmt.Errorf("can only insert messages from yourself")
 		}
 		return snek.QueryHasResults(u.View, []Member{}, &snek.Query{Set: snek.And{snek.Cond{"GroupID", snek.EQ, next.GroupID}, snek.Cond{"UserID", snek.EQ, u.Caller().UserID()}}})
@@ -251,19 +251,29 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   newMemberField.addEventListener('change', (ev) => { newMemberChangeHandler(ev); });
   const groupMembersSpan = document.getElementById('group-members');
   let ownedGroupMembersUnsubscribe = (() => {});
+  let memberGroupMessagesUnsubscribe = (() => {});
+  const memberGroupMessagesDiv = document.getElementById('member-group-messages');
+  const newMessageField = document.getElementById('new-message');
+  let newMessageChangeHandler = (ev) => {};
+  newMessageField.addEventListener('change', (ev) => { newMessageChangeHandler(ev); });
   const clear = () => {
+    console.log('clear');
 	newGroupChangeHandler = (ev) => {};
 	ownedGroupsSpan.innerHTML = '';
 	groupMembersSpan.innerHTML = '';
 	memberGroupsSpan.innerHTML = '';
 	ownedGroupMembersUnsubscribe();
 	ownedGroupMembersUnsubscribe = (() => {});
+	memberGroupMessagesUnsubscribe();
+	memberGroupMessagesUnsubscribe = (() => {});
+	memberGroupMessagesDiv.innerHTML = '';
+	newGroupField.setAttribute('disabled', true);
+	newMemberField.setAttribute('disabled', true);
+	newMessageField.setAttribute('disabled', true);
   };
   const connect = () => {
     identityField.value = '';
-	newGroupField.setAttribute('disabled', true);
 	identityChangeHandler = (ev) => {};
-	newMemberField.setAttribute('disable', true);
 	clear();
     setTimeout(() => {
 	  const awaitingResponse = {'': () => {
@@ -346,6 +356,7 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 			      const newGroup = {ID: utf8enc.encode(newGroupField.value), OwnerID: userID};
 				  log('creating ' + pp(newGroup));
 			 	  send({Update: {TypeName: 'Group', Insert: byteSerialize(newGroup)}}).then((res) => {
+				    log('created group');
 				    newGroupField.value = '';
 				  }).catch((err) => {
 				    log('failed creating group: ' + pp(err));
@@ -382,6 +393,7 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   					    const newMember = {ID: newID(), GroupID: group.ID, UserID: utf8enc.encode(newMemberField.value)};
   					    log('creating ' + pp(newMember));
   					    send({Update: {TypeName: 'Member', Insert: byteSerialize(newMember)}}).then((res) => {
+						  log('created member');
   						  newMemberField.value = '';
   						}).catch((err) => {
   						  log('failed creating member: ' + pp(err));
@@ -417,7 +429,6 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   				  });
   				});
   			  });
-			  console.log('subscribing');
 			  subscribe('Member', {Cond: {Field: 'UserID', Comparator: '=', Value: userID}}, (res) => {
 			    memberGroupsSpan.innerHTML = '';
 				res.forEach((member) => {
@@ -427,6 +438,38 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 				  const button = document.createElement('button');
 				  const text = document.createTextNode(groupName);
 				  button.appendChild(text);
+				  button.addEventListener('click', (ev) => {
+				    newMessageField.removeAttribute('disabled');
+				    newMessageChangeHandler = (ev) => {
+					  const newMessage = {ID: newID(), GroupID: member.GroupID, SenderID: userID, Body: newMessageField.value};
+				      log('creating ' + pp(newMessage));
+					  send({Update: {TypeName: 'Message', Insert: byteSerialize(newMessage)}}).then((res) => {
+					    log('created message');
+						newMessageField.value = '';
+					  }).catch((err) => {
+					    log('failed creating message: ' + pp(message));
+					  });
+					};
+                    memberGroupMessagesUnsubscribe();
+					subscribe('Message', {Cond: {Field: 'GroupID', Comparator: '=', Value: member.GroupID}}, (res) => {
+					  memberGroupMessagesDiv.innerHTML = '';
+					  res.forEach((message) => {
+					    const senderName = utf8dec.decode(message.SenderID);
+					    const div = document.createElement('div');
+					    const senderSpan = document.createElement('span');
+						const senderText = document.createTextNode(senderName + ': ');
+					    senderSpan.appendChild(senderText);
+					    const bodySpan = document.createElement('span');
+					    const bodyText = document.createTextNode(message.Body)
+					    bodySpan.appendChild(bodyText);
+						div.appendChild(senderSpan);
+					    div.appendChild(bodySpan);
+					    memberGroupMessagesDiv.prepend(div);
+					  });
+					}).then((unsub) => {
+					  memberGroupMessagesUnsubsribe = unsub;
+					});
+				  });
 				  span.appendChild(button);
 				  memberGroupsSpan.appendChild(span);
 				});
@@ -490,6 +533,11 @@ document.addEventListener('DOMContentLoaded', (ev) => {
 <div class='ui-box'>
 <h4>Memberships</h4>
 <span id='member-groups'></span>
+<div>
+<input disabled type='text' id='new-message' placeholder='new message' />
+</div>
+<div id='member-group-messages'>
+</div>
 </div>
 </body>
 </html>

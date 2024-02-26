@@ -154,8 +154,8 @@ func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
 // Sent by server after initial Subscribe and every time the data matching set of data is modified.
 type Data struct {
 	CauseMessageID snek.ID
-	Error          string `sbor:",omitempty"`
-	Blob           []byte `sbor:",omitempty"`
+	Error          string      `sbor:",omitempty"`
+	Blob           PrettyBytes `sbor:",omitempty"`
 }
 
 func (d *Data) String() string {
