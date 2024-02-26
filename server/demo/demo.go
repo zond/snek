@@ -257,7 +257,6 @@ document.addEventListener('DOMContentLoaded', (ev) => {
   let newMessageChangeHandler = (ev) => {};
   newMessageField.addEventListener('change', (ev) => { newMessageChangeHandler(ev); });
   const clear = () => {
-    console.log('clear');
 	newGroupChangeHandler = (ev) => {};
 	ownedGroupsSpan.innerHTML = '';
 	groupMembersSpan.innerHTML = '';
