@@ -470,6 +470,7 @@ type Server struct {
 	types      map[string]reflect.Type
 	mux        *http.ServeMux
 	httpServer *http.Server
+	Upgrader   *websocket.Upgrader
 }
 
 // Open returns a server using the provided options.
@@ -483,16 +484,16 @@ func (o Options) Open() (*Server, error) {
 		snek:  s,
 		types: map[string]reflect.Type{},
 		mux:   http.NewServeMux(),
+		Upgrader: &websocket.Upgrader{
+			EnableCompression: true,
+		},
 	}
 	result.httpServer = &http.Server{
 		Addr:    o.Addr,
 		Handler: result.mux,
 	}
-	upgrader := websocket.Upgrader{
-		EnableCompression: true,
-	}
 	result.mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := result.Upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("while upgrading %+v, %+v: %v", w, r, err)
 			return
