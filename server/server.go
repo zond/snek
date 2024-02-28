@@ -243,7 +243,7 @@ func (r *Result) String() string {
 
 // Sent from client to server to attain a caller identity.
 type Identity struct {
-	Token []byte
+	Token PrettyBytes
 }
 
 func (i *Identity) String() string {
