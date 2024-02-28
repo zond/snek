@@ -337,10 +337,12 @@ func (c *client) readLoop() {
 			go func() {
 				message := &Message{}
 				if err := cbor.Unmarshal(b, message); err != nil {
+					log.Printf("while unmarshalling message: %v", err)
 					c.send(c.response(nil, fmt.Errorf("unable to parse message: %v", err)))
 					return
 				}
 				if err := message.validate(); err != nil {
+					log.Printf("while validating message: %v", err)
 					c.send(c.response(message, err))
 					return
 				}
