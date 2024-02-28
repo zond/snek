@@ -243,7 +243,7 @@ func (r *Result) String() string {
 
 // Sent from client to server to attain a caller identity.
 type Identity struct {
-	Token PrettyBytes
+	Token snek.ID
 }
 
 func (i *Identity) String() string {
@@ -367,7 +367,7 @@ func (c *client) readLoop() {
 					if err != nil {
 						c.send(c.response(message, err))
 					} else {
-						log.Printf("caller identified as %+v", caller)
+						log.Printf("caller identified as %+v", caller.UserID())
 						c.caller.Set(caller)
 						c.send(c.response(message, nil))
 					}
