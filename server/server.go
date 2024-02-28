@@ -127,7 +127,7 @@ func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
 			errString = err.Error()
 		}
 		msg := &Message{
-			ID: c.server.snek.NewID(),
+			ID: c.server.Snek.NewID(),
 			Data: &Data{
 				CauseMessageID: causeMessageID,
 				Error:          errString,
@@ -139,7 +139,7 @@ func (s *Subscribe) execute(c *client, causeMessageID snek.ID) error {
 		}
 		return []reflect.Value{reflect.Zero(reflect.TypeOf((*error)(nil)).Elem())}
 	})
-	subscription, err := snek.Subscribe(c.server.snek, c.caller.Get(), query, snek.AnySubscriber(typ, subscriptionFunc.Interface().(func(any, error) error)))
+	subscription, err := snek.Subscribe(c.server.Snek, c.caller.Get(), query, snek.AnySubscriber(typ, subscriptionFunc.Interface().(func(any, error) error)))
 	if err != nil {
 		return err
 	}
@@ -219,7 +219,7 @@ func (u *Update) execute(c *client) error {
 	if err := cbor.Unmarshal(b, instance); err != nil {
 		return err
 	}
-	return c.server.snek.Update(c.caller.Get(), func(upd *snek.Update) error {
+	return c.server.Snek.Update(c.caller.Get(), func(upd *snek.Update) error {
 		switch op {
 		case insert:
 			return upd.Insert(instance)
@@ -276,7 +276,7 @@ type Message struct {
 
 func (c *client) response(m *Message, err error) *Message {
 	errMessage := &Message{
-		ID:     c.server.snek.NewID(),
+		ID:     c.server.Snek.NewID(),
 		Result: &Result{},
 	}
 	if m != nil {
@@ -365,9 +365,10 @@ func (c *client) readLoop() {
 				case message.Identity != nil:
 					caller, err := c.server.opts.Identifier.Identify(message.Identity)
 					if err != nil {
+						log.Printf("caller failed to identify: %v", err)
 						c.send(c.response(message, err))
 					} else {
-						log.Printf("caller identified as %+v", caller.UserID())
+						log.Printf("caller identified as %+v", caller)
 						c.caller.Set(caller)
 						c.send(c.response(message, nil))
 					}
@@ -467,7 +468,7 @@ func DefaultOptions(addr string, path string, identifier Identifier) Options {
 
 // Server serves websockets to a snek database.
 type Server struct {
-	snek       *snek.Snek
+	Snek       *snek.Snek
 	opts       Options
 	types      map[string]reflect.Type
 	mux        *http.ServeMux
@@ -482,8 +483,8 @@ func (o Options) Open() (*Server, error) {
 		return nil, err
 	}
 	result := &Server{
+		Snek:  s,
 		opts:  o,
-		snek:  s,
 		types: map[string]reflect.Type{},
 		mux:   http.NewServeMux(),
 		Upgrader: &websocket.Upgrader{
@@ -520,7 +521,7 @@ func (s *Server) Mux() *http.ServeMux {
 
 // Register registers the type of the example structPointer in the server and store and ensures there is a table for the type.
 func Register[T any](s *Server, structPointer *T, queryControl snek.QueryControl, updateControl snek.UpdateControl[T]) error {
-	err := snek.Register(s.snek, structPointer, queryControl, updateControl)
+	err := snek.Register(s.Snek, structPointer, queryControl, updateControl)
 	if err != nil {
 		return err
 	}

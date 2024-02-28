@@ -69,17 +69,17 @@ type Snek struct {
 	permissions   map[string]permissions
 }
 
-type systemCaller struct{}
+type SystemCaller struct{}
 
-func (s systemCaller) UserID() ID {
+func (s SystemCaller) UserID() ID {
 	return nil
 }
 
-func (s systemCaller) IsAdmin() bool {
+func (s SystemCaller) IsAdmin() bool {
 	return false
 }
 
-func (s systemCaller) IsSystem() bool {
+func (s SystemCaller) IsSystem() bool {
 	return true
 }
 
@@ -145,7 +145,7 @@ func Register[T any](s *Snek, structPointer *T, queryControl QueryControl, updat
 			return updateControl(update, realPrev, realNext)
 		},
 	}
-	return s.Update(systemCaller{}, func(u *Update) error {
+	return s.Update(SystemCaller{}, func(u *Update) error {
 		return u.exec(info.toCreateStatement())
 	})
 }

@@ -24,7 +24,7 @@ func (v *View) Caller() Caller {
 }
 
 func (v *View) queryControl(typ reflect.Type, query *Query) error {
-	if v.isControl {
+	if v.caller.IsSystem() || v.isControl {
 		return nil
 	}
 	perms, found := v.snek.permissions[typ.Name()]
@@ -43,7 +43,7 @@ type Update struct {
 }
 
 func (u *Update) updateControl(typ reflect.Type, prev, next any) error {
-	if u.View.isControl {
+	if u.View.caller.IsSystem() || u.View.isControl {
 		return nil
 	}
 	perms, found := u.snek.permissions[typ.Name()]
