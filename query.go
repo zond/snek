@@ -213,7 +213,7 @@ func (c Comparator) apply(a, b reflect.Value) (bool, error) {
 			return incomparableB()
 		}
 	} else {
-		return false, fmt.Errorf("%v %s %v: %T isn't comparable", a.Interface(), c, b.Interface(), a.Interface())
+		return false, fmt.Errorf("%v %s %v: %#v isn't comparable", a.Interface(), c, b.Interface(), a.Interface())
 	}
 }
 
