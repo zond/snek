@@ -115,11 +115,11 @@ func (s *subscription) load() (any, [highwayhash.Size]byte, error) {
 	})
 	var emptyHash [highwayhash.Size]byte
 	if err != nil {
-		return nil, emptyHash, err
+		return results, emptyHash, err
 	}
 	b, err := json.Marshal(results)
 	if err != nil {
-		return nil, emptyHash, err
+		return results, emptyHash, err
 	}
 	hash := highwayhash.Sum(b, highwayHashKey)
 	return results, hash, nil
@@ -131,7 +131,7 @@ func (s *subscription) push() {
 	// data from the same subscription anyway.
 	s.lock.Sync(func() error {
 		results, hash, loadErr := s.load()
-		if hash != s.lastPushHash {
+		if hash != s.lastPushHash || loadErr != nil {
 			pushErr := s.subscriber.handleResults(results, loadErr)
 			if pushErr != nil {
 				subs := s.snek.getSubscriptions(s.subscriber.getType())
