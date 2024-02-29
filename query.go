@@ -165,6 +165,9 @@ func (c Comparator) apply(a, b reflect.Value) (bool, error) {
 	incomparableB := func() (bool, error) {
 		return false, fmt.Errorf("%v %s %v: %T not comparable to %T", a.Interface(), c, b.Interface(), a.Interface(), b.Interface())
 	}
+	if !a.IsValid() || !b.IsValid() {
+		return false, fmt.Errorf("can't compare invalid values %v, %v", a, b)
+	}
 	if a.Kind() == reflect.String {
 		if b.Kind() == reflect.String {
 			return comparePrimitives(c, a.String(), b.String())

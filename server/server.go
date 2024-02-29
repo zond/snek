@@ -394,7 +394,9 @@ func (c *client) send(m *Message) error {
 		c.conn.SetWriteDeadline(time.Now().Add(c.server.opts.WriteWait))
 		return c.conn.WriteMessage(websocket.BinaryMessage, b)
 	})
-	if err != nil {
+	if err == nil {
+		log.Printf("sent message %+v", m)
+	} else {
 		log.Printf("while sending %+v: %v", m, err)
 		atomic.StoreInt32(&c.closed, 1)
 	}
