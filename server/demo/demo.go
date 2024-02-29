@@ -131,8 +131,8 @@ type trustingIdentifier struct{}
 
 // Identify will return a Caller (trusted user identity) which just
 // assume whatever the user claimed was true.
-func (t trustingIdentifier) Identify(i *server.Identity) (snek.Caller, error) {
-	return simpleCaller{userID: i.Token}, nil
+func (t trustingIdentifier) Identify(i *server.Identity) (snek.Caller, server.PrettyBytes, error) {
+	return simpleCaller{userID: i.Token}, nil, nil
 }
 
 // simpleCaller is a container for a userID.

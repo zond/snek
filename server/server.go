@@ -234,7 +234,8 @@ func (u *Update) execute(c *client) error {
 // Sent from server as response to every message from the client.
 type Result struct {
 	CauseMessageID snek.ID
-	Error          string
+	Error          string      `sbor:",omitempty"`
+	Aux            PrettyBytes `sbor:",omitempty"`
 }
 
 func (r *Result) String() string {
@@ -274,18 +275,21 @@ type Message struct {
 	Result *Result `sbor:",omitempty"`
 }
 
-func (c *client) response(m *Message, err error) *Message {
-	errMessage := &Message{
+func (c *client) response(m *Message, aux PrettyBytes, err error) *Message {
+	resp := &Message{
 		ID:     c.server.Snek.NewID(),
 		Result: &Result{},
 	}
 	if m != nil {
-		errMessage.Result.CauseMessageID = m.ID
+		resp.Result.CauseMessageID = m.ID
 	}
 	if err != nil {
-		errMessage.Result.Error = err.Error()
+		resp.Result.Error = err.Error()
 	}
-	return errMessage
+	if aux != nil {
+		resp.Result.Aux = aux
+	}
+	return resp
 }
 
 func (m *Message) validate() error {
@@ -338,39 +342,39 @@ func (c *client) readLoop() {
 				message := &Message{}
 				if err := cbor.Unmarshal(b, message); err != nil {
 					log.Printf("while unmarshalling message: %v", err)
-					c.send(c.response(nil, fmt.Errorf("unable to parse message: %v", err)))
+					c.send(c.response(nil, nil, fmt.Errorf("unable to parse message: %v", err)))
 					return
 				}
 				if err := message.validate(); err != nil {
 					log.Printf("while validating message: %v", err)
-					c.send(c.response(message, err))
+					c.send(c.response(message, nil, err))
 					return
 				}
 				log.Printf("received message %+v", message)
 
 				switch {
 				case message.Subscribe != nil:
-					c.send(c.response(message, message.Subscribe.execute(c, message.ID)))
+					c.send(c.response(message, nil, message.Subscribe.execute(c, message.ID)))
 				case message.Unsubscribe != nil:
 					stringID := string(message.Unsubscribe.SubscriptionID)
 					if sub, found := c.subscriptions[stringID]; found {
 						sub.Close()
 						delete(c.subscriptions, stringID)
-						c.send(c.response(message, nil))
+						c.send(c.response(message, nil, nil))
 					} else {
-						c.send(c.response(message, fmt.Errorf("subscription %v not found", message.Unsubscribe.SubscriptionID)))
+						c.send(c.response(message, nil, fmt.Errorf("subscription %v not found", message.Unsubscribe.SubscriptionID)))
 					}
 				case message.Update != nil:
-					c.send(c.response(message, message.Update.execute(c)))
+					c.send(c.response(message, nil, message.Update.execute(c)))
 				case message.Identity != nil:
-					caller, err := c.server.opts.Identifier.Identify(message.Identity)
+					caller, aux, err := c.server.opts.Identifier.Identify(message.Identity)
 					if err != nil {
 						log.Printf("caller failed to identify: %v", err)
-						c.send(c.response(message, err))
+						c.send(c.response(message, nil, err))
 					} else {
 						log.Printf("caller identified as %+v", caller)
 						c.caller.Set(caller)
-						c.send(c.response(message, nil))
+						c.send(c.response(message, aux, nil))
 					}
 				default:
 					log.Printf("received unexpected message %+v", message)
@@ -432,13 +436,13 @@ func (a anonymousCaller) IsSystem() bool {
 // An Identifier that always identifies as anonymous callers.
 type AnonymousIdentifier struct{}
 
-func (a AnonymousIdentifier) Identify(*Identity) (snek.Caller, error) {
-	return anonymousCaller{}, nil
+func (a AnonymousIdentifier) Identify(*Identity) (snek.Caller, PrettyBytes, error) {
+	return anonymousCaller{}, nil, nil
 }
 
 // Identifier allows verifying identities into callers.
 type Identifier interface {
-	Identify(*Identity) (snek.Caller, error)
+	Identify(*Identity) (snek.Caller, PrettyBytes, error)
 }
 
 // Options contains server configuration.
