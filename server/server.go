@@ -350,7 +350,7 @@ func (c *client) readLoop() {
 					c.send(c.response(message, nil, err))
 					return
 				}
-				log.Printf("received message %+v", message)
+				log.Printf("<- received message %+v", message)
 
 				switch {
 				case message.Subscribe != nil:
@@ -395,7 +395,7 @@ func (c *client) send(m *Message) error {
 		return c.conn.WriteMessage(websocket.BinaryMessage, b)
 	})
 	if err == nil {
-		log.Printf("sent message %+v", m)
+		log.Printf("-> sent message %+v", m)
 	} else {
 		log.Printf("while sending %+v: %v", m, err)
 		atomic.StoreInt32(&c.closed, 1)
