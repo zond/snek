@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 )
 
 type valueInfo struct {
@@ -107,6 +108,8 @@ func (i *valueInfo) toUpdateStatement() (string, []any) {
 	return builder.String(), fieldValueParts
 }
 
+var timeType = reflect.TypeOf(time.Now())
+
 func (f fieldInfoMap) addFields(prefix string, val reflect.Value) {
 	for _, field := range reflect.VisibleFields(val.Type()) {
 		fieldVal := val.FieldByIndex(field.Index)
@@ -167,7 +170,11 @@ func (f fieldInfoMap) addFields(prefix string, val reflect.Value) {
 		case reflect.String:
 			f[prefix+field.Name] = makeFieldInfo("TEXT")
 		case reflect.Struct:
-			f.addFields(prefix+field.Name+".", fieldVal)
+			if field.Type == timeType {
+				f[prefix+field.Name] = makeFieldInfo("INTEGER")
+			} else {
+				f.addFields(prefix+field.Name+".", fieldVal)
+			}
 		default:
 		}
 	}
