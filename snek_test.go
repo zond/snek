@@ -135,6 +135,39 @@ func TestOpen(t *testing.T) {
 	})
 }
 
+type timeTestStruct struct {
+	ID       ID
+	T        TimeText
+	TPointer *TimeText
+}
+
+func TestTime(t *testing.T) {
+	withSnek(t, func(s *testSnek) {
+		tt := &timeTestStruct{ID: s.NewID()}
+		s.must(Register(s.Snek, tt, UncontrolledQueries, UncontrolledUpdates(tt)))
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
+			return u.Insert(tt)
+		}))
+		found := &timeTestStruct{ID: tt.ID}
+		s.must(s.View(AnonCaller{}, func(v *View) error {
+			return v.Get(found)
+		}))
+		if !found.T.Time().IsZero() {
+			t.Errorf("got %v, wanted 0", found.T)
+		}
+		tt.T = ToText(time.Now())
+		s.must(s.Update(AnonCaller{}, func(u *Update) error {
+			return u.Update(tt)
+		}))
+		s.must(s.View(AnonCaller{}, func(v *View) error {
+			return v.Get(found)
+		}))
+		if !found.T.Time().Equal(tt.T.Time()) {
+			t.Errorf("got %v, wanted %v", found.T, tt.T)
+		}
+	})
+}
+
 type innerTestStruct struct {
 	Float float64
 }

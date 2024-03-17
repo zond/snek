@@ -15,6 +15,25 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+const (
+	sqliteTimeFormat = "2006-01-02 15:04:05.999"
+)
+
+// TimeText represents timestamps in SQLite.
+type TimeText string
+
+func (t TimeText) Time() time.Time {
+	res, err := time.Parse(sqliteTimeFormat, string(t))
+	if err != nil {
+		return time.Time{}
+	}
+	return res
+}
+
+func ToText(t time.Time) TimeText {
+	return TimeText(t.Format(sqliteTimeFormat))
+}
+
 // ID is the identifier of anything.
 type ID []byte
 

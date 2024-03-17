@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"time"
 )
 
 type valueInfo struct {
-	val     reflect.Value
-	typ     reflect.Type
-	id      ID
-	_fields fieldInfoMap
+	val                  reflect.Value
+	typ                  reflect.Type
+	id                   ID
+	_fieldsWithValues    fieldInfoMap
+	_fieldsWithoutValues fieldInfoMap
 }
 
 type fieldInfo struct {
@@ -36,7 +36,7 @@ func (i *valueInfo) toCreateStatement() string {
 	fmt.Fprintf(builder, "CREATE TABLE IF NOT EXISTS \"%s\" (\n", i.typ.Name())
 	fieldParts := []string{}
 	createIndexParts := []string{}
-	for fieldName, fieldInfo := range i.fields() {
+	for fieldName, fieldInfo := range i.fields(false) {
 		primaryKey := ""
 		if fieldInfo.primaryKey {
 			primaryKey = " PRIMARY KEY"
@@ -80,7 +80,7 @@ func (i *valueInfo) toInsertStatement() (string, []any) {
 	fieldNameParts := []string{}
 	fieldQMParts := []string{}
 	fieldValueParts := []any{}
-	for fieldName, fieldInfo := range i.fields() {
+	for fieldName, fieldInfo := range i.fields(true) {
 		fieldNameParts = append(fieldNameParts, fmt.Sprintf("\"%s\"", fieldName))
 		fieldQMParts = append(fieldQMParts, "?")
 		fieldValueParts = append(fieldValueParts, fieldInfo.value)
@@ -95,7 +95,7 @@ func (i *valueInfo) toUpdateStatement() (string, []any) {
 	fieldNameParts := []string{}
 	fieldValueParts := []any{}
 	var primaryKey any
-	for fieldName, fieldInfo := range i.fields() {
+	for fieldName, fieldInfo := range i.fields(true) {
 		if fieldInfo.primaryKey {
 			primaryKey = fieldInfo.value
 		} else {
@@ -108,84 +108,104 @@ func (i *valueInfo) toUpdateStatement() (string, []any) {
 	return builder.String(), fieldValueParts
 }
 
-var timeType = reflect.TypeOf(time.Now())
-
-func (f fieldInfoMap) addFields(prefix string, val reflect.Value) {
-	for _, field := range reflect.VisibleFields(val.Type()) {
-		fieldVal := val.FieldByIndex(field.Index)
-		makeFieldInfo := func(columnType string) fieldInfo {
-			return fieldInfo{
-				columnType: columnType,
-				value:      fieldVal.Interface(),
-				indexed:    field.Tag.Get("snek") == "index",
-				unique:     field.Tag.Get("snek") == "unique",
-				primaryKey: prefix == "" && field.Name == "ID",
-			}
-
+func (f fieldInfoMap) processField(prefix string, field reflect.StructField, typ reflect.Type, fieldVal *reflect.Value) {
+	makeFieldInfo := func(columnType string, val *reflect.Value) fieldInfo {
+		res := fieldInfo{
+			columnType: columnType,
+			indexed:    field.Tag.Get("snek") == "index",
+			unique:     field.Tag.Get("snek") == "unique",
+			primaryKey: prefix == "" && field.Name == "ID",
 		}
-		switch field.Type.Kind() {
-		case reflect.Bool:
-			f[prefix+field.Name] = makeFieldInfo("BOOLEAN")
-		case reflect.Int:
-			fallthrough
-		case reflect.Int8:
-			fallthrough
-		case reflect.Int16:
-			fallthrough
-		case reflect.Int32:
-			fallthrough
-		case reflect.Int64:
-			fallthrough
-		case reflect.Uint:
-			fallthrough
-		case reflect.Uint8:
-			fallthrough
-		case reflect.Uint16:
-			fallthrough
-		case reflect.Uint32:
-			fallthrough
-		case reflect.Uint64:
-			f[prefix+field.Name] = makeFieldInfo("INTEGER")
-		case reflect.Float32:
-			fallthrough
-		case reflect.Float64:
-			f[prefix+field.Name] = makeFieldInfo("REAL")
-		case reflect.Array:
-			if field.Type.Elem().Kind() == reflect.Uint8 {
-				cpy := make([]uint8, fieldVal.Len())
-				reflect.Copy(reflect.ValueOf(cpy), fieldVal)
-				f[prefix+field.Name] = fieldInfo{
-					columnType: "BLOB",
-					value:      cpy,
-					indexed:    field.Tag.Get("snek") == "index",
-					primaryKey: prefix == "" && field.Name == "ID",
-				}
-			}
-		case reflect.Slice:
-			if field.Type.Elem().Kind() == reflect.Uint8 {
-				f[prefix+field.Name] = makeFieldInfo("BLOB")
-			}
-		case reflect.Pointer:
-			f.addFields(prefix, fieldVal.Elem())
-		case reflect.String:
-			f[prefix+field.Name] = makeFieldInfo("TEXT")
-		case reflect.Struct:
-			if field.Type == timeType {
-				f[prefix+field.Name] = makeFieldInfo("INTEGER")
-			} else {
-				f.addFields(prefix+field.Name+".", fieldVal)
-			}
-		default:
+		if val != nil {
+			res.value = (*val).Interface()
 		}
+		return res
+	}
+	switch typ.Kind() {
+	case reflect.Bool:
+		f[prefix+field.Name] = makeFieldInfo("BOOLEAN", fieldVal)
+	case reflect.Int:
+		fallthrough
+	case reflect.Int8:
+		fallthrough
+	case reflect.Int16:
+		fallthrough
+	case reflect.Int32:
+		fallthrough
+	case reflect.Int64:
+		fallthrough
+	case reflect.Uint:
+		fallthrough
+	case reflect.Uint8:
+		fallthrough
+	case reflect.Uint16:
+		fallthrough
+	case reflect.Uint32:
+		fallthrough
+	case reflect.Uint64:
+		f[prefix+field.Name] = makeFieldInfo("INTEGER", fieldVal)
+	case reflect.Float32:
+		fallthrough
+	case reflect.Float64:
+		f[prefix+field.Name] = makeFieldInfo("REAL", fieldVal)
+	case reflect.Array:
+		if typ.Elem().Kind() == reflect.Uint8 {
+			var cpyVal *reflect.Value
+			if fieldVal != nil {
+				cpy := make([]uint8, (*fieldVal).Len())
+				reflect.Copy(reflect.ValueOf(cpy), *fieldVal)
+				cpyValMem := reflect.ValueOf(cpy)
+				cpyVal = &cpyValMem
+			}
+			f[prefix+field.Name] = makeFieldInfo("BLOB", cpyVal)
+		}
+	case reflect.Slice:
+		if typ.Elem().Kind() == reflect.Uint8 {
+			f[prefix+field.Name] = makeFieldInfo("BLOB", fieldVal)
+		}
+	case reflect.Pointer:
+		var refVal *reflect.Value
+		if fieldVal != nil && !fieldVal.IsNil() {
+			refValMem := (*fieldVal).Elem()
+			refVal = &refValMem
+		}
+		f.processField(prefix, field, typ.Elem(), refVal)
+	case reflect.String:
+		f[prefix+field.Name] = makeFieldInfo("TEXT", fieldVal)
+	case reflect.Struct:
+		f.addFields(prefix+field.Name+".", typ, fieldVal)
+	default:
 	}
 }
 
-func (i *valueInfo) fields() fieldInfoMap {
-	if len(i._fields) == 0 {
-		i._fields = fieldInfoMap{}
-		i._fields.addFields("", i.val)
+func (f fieldInfoMap) addFields(prefix string, typ reflect.Type, val *reflect.Value) {
+	for _, field := range reflect.VisibleFields(typ) {
+		if !field.IsExported() {
+			continue
+		}
+		var fieldValue *reflect.Value
+		if val != nil {
+			fieldValMem := (*val).FieldByIndex(field.Index)
+			fieldValue = &fieldValMem
+		}
+		f.processField(prefix, field, field.Type, fieldValue)
 	}
-	return i._fields
+}
+
+func (i *valueInfo) fields(values bool) fieldInfoMap {
+	if values {
+		if len(i._fieldsWithValues) == 0 {
+			i._fieldsWithValues = fieldInfoMap{}
+			i._fieldsWithValues.addFields("", i.typ, &i.val)
+		}
+		return i._fieldsWithValues
+	} else {
+		if len(i._fieldsWithoutValues) == 0 {
+			i._fieldsWithoutValues = fieldInfoMap{}
+			i._fieldsWithoutValues.addFields("", i.typ, nil)
+		}
+		return i._fieldsWithoutValues
+	}
 }
 
 func getValueInfo(val reflect.Value) (*valueInfo, error) {

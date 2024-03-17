@@ -94,7 +94,15 @@ func (v *View) logSQL(query string, params []any, structSlicePointer any, err er
 			case ID:
 				paramParts = append(paramParts, fmt.Sprintf("%v", []byte(v)))
 			default:
-				paramParts = append(paramParts, fmt.Sprintf("%+v", v))
+				if v == nil {
+					paramParts = append(paramParts, "<nil>")
+				} else {
+					if reflect.TypeOf(v).Kind() == reflect.String {
+						paramParts = append(paramParts, fmt.Sprintf("%q", v))
+					} else {
+						paramParts = append(paramParts, fmt.Sprintf("%+v", v))
+					}
+				}
 			}
 		}
 		paramString = fmt.Sprintf("\nParameters: %s", strings.Join(paramParts, ", "))
